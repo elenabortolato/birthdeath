@@ -3,14 +3,14 @@
 
 
 # library import 
-
+if(1==1){
 library(pgdraw)
 library(MASS)
 library(Rcpp)
 library(statmod)
 library(mnormt)
 library(mvtnorm)
-
+}
 #polya gamma data augmentation
 cppFunction('
 
@@ -42,18 +42,18 @@ List pgg_m_sigma_(const Eigen::Map<Eigen::MatrixXd>  & omega,
 
 
 #initialize everything     
-set.seed(12525)
+set.seed(1411)
 
 
 if(1==1){  
   # dimension of the data
-  p=30#ncol(y)
+  p=50#ncol(y)
   d=3# fixed
   T=25#nrow(y)
   
   
-  a_delta=2;b_delta=1# variance of error covariance 
-  a_lam=2;b_lam=1# governing loadings variance
+  a_delta=1;b_delta=1# variance of error covariance 
+  a_lam=1;b_lam=1# governing loadings variance
   
   #furthermore
   # covariate for the probability of Lambda=0|s=1
@@ -64,17 +64,17 @@ if(1==1){
   invPlam=solve(Plam)
   
   # initailize precision matrix of the "errors"
-  deltas = 0.2*rep(1,p)
+  deltas = 0.1*rep(1,p)
   Delta=diag(deltas)
   invDelta=diag(1/diag((Delta)))
-  eps=mvnfast::rmvn(T,sigma = invDelta, mu=rep(0,p))
+  eps=mvnfast::rmvn(T,sigma =diag(p), mu=rep(0,p))
   # this is a copy of errors useful for the gibbs sampler
   
   # we can omit this parameter- it is a constant
   p_constant =1 #2*exp(1)*log(p)/p      
   
   # initialize LAMBDA CONSTANT over time
-  Lambda=array(rnorm(p*d,0,1)*rbinom(p*d,size = 1,prob = 0.9999),
+  Lambda=array(rnorm(p*d,0,1)*rbinom(p*d,size = 1,prob = 10/p),
                dim = c(p,d,T))
   
   
@@ -89,8 +89,8 @@ if(1==1){
   #Lambda=Lambda_*Psi
   
   #"big shock that acts on all factors"
-  Lambda[,1:3,1:12]=  0.2*Lambda[,1:3,1:12]+  
-    array(runif(3*p, -0.5,+0.5)*rbinom(p*3,size = 1,prob = 0.99),dim = c(p,3,12))
+  Lambda[,1:3,1:12]=  0.0*Lambda[,1:3,1:12]+  
+    array(runif(3*p, -0.5,+0.5)*rbinom(p*3,size = 1,prob = 15/p),dim = c(p,3,12))
   
   
   
@@ -110,10 +110,9 @@ if(1==1){
   # and y coherent to the loadings defined
   for(t in 1:T){
     Pt=diag(d)+ t(Lambda[,,t])%*%invDelta%*%(Lambda[,,t])
-    invPeta<-ginv(Pt)
-    Peta
+     
     eps[t,]=mvnfast::rmvn(1,sigma =invDelta,mu=rep(0, p))  
-    eta[t,] =  mvnfast::rmvn(1,sigma =Pt,mu=rep(0, d ))   
+    eta[t,] =  mvnfast::rmvn(1,sigma =diag(d),mu=rep(0, d ))   
     
     vart=solve(tcrossprod(Lambda[,,t])+Delta)
     y[t,]= mvnfast::rmvn(1,sigma = vart,mu=rep(0, p ))   
@@ -123,8 +122,8 @@ if(1==1){
   image(precision) # this is the empirical precision matrix,  
   #not accounting for time variation
   # beta birth and death 
-  BETA0 =matrix(rep(c(-4.61,02.1,02.2),d), ncol=d)
-  BETA1 =matrix(rep(c(-1.93,-02.1,02.2),d), ncol=d)
+  BETA0 =matrix(rep(c(-4.61,-2.1,-2.2),d), ncol=d)
+  BETA1 =matrix(rep(c(-1.93,-2.1,-2.2),d), ncol=d)
   rownames(BETA0)=rownames(BETA1)=c("beta0", "beta_birth", "beta_death")
   BETA0
   XBD=matrix(0, nrow=T, ncol=3)
@@ -159,31 +158,41 @@ par(mfrow=c(1,2))
 par(mar=c(3,3,3,3))
 t=1
 image(tcrossprod(Lambda_true[,,t]), main="t=1")
-t=20
+t=25
 image(tcrossprod(Lambda_true[,,t]), main="t=20")
 
 
-Lambda=jitter(Lambda_true,amount = 0.5)
- 
+
+# the same
+Lambda=jitter(Lambda_true,amount = 0.1)
+eta=jitter(eta,amount = .1)
 Lambda-Lambda_true
  
+s[,1]=1 
+s[,13]=1
 
-# check that the Lambdas are coherent with the shocks
+
+eps# check that the Lambdas are coherent with the shocks
 for(t in 1:T){
   W0=which(s[,t]==0)
   if(t>1) Lambda[,W0,t]=Lambda[,W0,t-1]
 }
 
- 
+t=1
+image(tcrossprod(Lambda[,,t]), main="t=1")
+t=27
+image(tcrossprod(Lambda[,,t]), main="t=27")
 
-s[,13]=1
-#s[,4]=1
+
+ 
+p#s[,4]=1
 # I will store just the Monte Carlo mean of the 
 # "time varying - precision matrix" Lambda_t Lambda_t^T 
 # in this tensor
 LL=array(0, c(p,p,T))
 Deltas=Delta
  
+
 
 T
 llik_hist=rep(0,10000)
@@ -192,9 +201,18 @@ llik_lambda_hist=rep(0,10000)
 llik_hist_ext=rep(0,10000)
 
 
+
 iter=1
+
+
+# ETA INDIPEND STAND 1.44
+# U 1.86
+# MY UPDATE 0.87
+
+
 ### gibbs 
-for( iter in iter:1000){
+system.time(
+for( iter in iter:10000){
   
   # eta and epsilon
    
@@ -203,64 +221,206 @@ for( iter in iter:1000){
     I=diag(d)
     Pt <- I + t(Lambda[,,t]) %*% invDelta %*% Lambda[,,t]
     invPt=solve(Pt)
-    dim(Pt)
-    CP=chol(invPt)
-    A <- t(-invDelta %*% Lambda[,,t] %*% t(CP))
-    var_update = solve(I+A%*%Delta%*% t(A) )
-    mean_update = var_update%*% ( A%*%Delta%*%(y[t,])) 
+    
+    CPt=chol(Pt)
+    invCPt=chol(invPt)
+    A <- t(-invDelta %*% Lambda[,,t] %*% t(invCPt))
+    var_update = solve(I+A%*%invDelta%*% t(A) )
+    mean_update = var_update%*% ( A%*%invDelta%*%(y[t,])) 
     var_update=0.5*(var_update+t( var_update))
-   # eta[t,]= rmvnorm(1,rep(0,d), var_update )+c(mean_update)
+  #eta[t,]= rmvnorm(1,rep(0,d), var_update )+c(mean_update)
     eta[t,]=rmvnorm(1,rep(0,d),sigma = diag(d))  
     eta[t,]=eta[t,]-mean(eta[t,])
-    eta[t,]=eta[t,]/sd(eta[t,])
+    eta[t,]=eta[t,]/sd(eta[t,]) 
     cvar=chol(var_update)
     eta[t,]=cvar%*%eta[t,]+c(mean_update)
-    
+    eta[t,]=(CPt)%*%eta[t,]
+    #eta[t,]=rmvnorm(1,rep(0,d),sigma = Pt) 
     K=t(invDelta%*%(Lambda[,,t])%*%invPt) 
-    eps[t,]=y[t,]+(eta[t,])%*%K
+    eps[t,]=y[t,]+c(eta[t,])%*%K
   }
    
+  
+  tt=sample(2:(T-1),1)
+  
+  for(t in tt) {
+    for (h in 1:d) {
+      # Compute probabilities
+      if (s[h,t-1]==1) p1 = plogis(sum(BETA1[,h] * XBD[t,]))  # P(s_t=1 | s_{t-1}=1)
+      if (s[h,t-1]==0) p1 = plogis(sum(BETA0[,h] * XBD[t,]))  # P(s_t=1 | s_{t-1}=0)
+      
+      pfuture_1 = plogis(sum(BETA1[,h] * XBD[t+1,]))  # P(s_{t+1} = 1 | s_t = 1)
+      pfuture_0 = plogis(sum(BETA0[,h] * XBD[t+1,]))  # P(s_{t+1} = 1 | s_t = 0)
+      
+      future_1=dbinom(s[h,t+1],1,pfuture_1)
+      future_0=dbinom(s[h,t+1],1,pfuture_0)
+      # Compute likelihood contributions
+      likelihood_1 = exp(sum(dnorm(Lambda[,h,t], 0, sqrt(Plam[h,h]), log=T)))
+      likelihood_0 = exp(sum(dnorm(Lambda[,h,t-1], 0, sqrt(Plam[h,h]), log=T)))
+      
+      # Since likelihood_0 involves equality, we simplify by considering it as part of the model structure
+      is_equal <- all(Lambda[, h, t] == Lambda[, h, t - 1])
+      likelihood_0 <- if (is_equal) 1 else 0
+      # Compute posterior probability
+      num = p1 * future_1 * likelihood_1
+      den = num + (1 - p1) * (future_0) * likelihood_0
+      
+      # Sample s_t
+      
+      s[h,t] = rbinom(1, 1, num / den)
+      if(den==0) s[h,t] =0
+    }
+  }
+  if(2==2){ 
+    deltas=rgamma(p, a_delta + 0.5*T, b_delta+0.5*colSums(eps^2,na.rm = T))
+    Delta=diag(deltas)
+    invDelta=diag(1/deltas)
+  }
+
     
-    t=1
+  t=1
+  
+    for(t in 1:T){
+      w1=which(s[,t]==1)
+      w0=which(s[,t]==0)
+      
+      if(t==1)  w1=c(1:d) #all have shock
+      if(t==1)  w0=which(1:d>Inf) #none has previous value
+     
+      # define time slots between shocks for each latent factor (h=1...d)
+      # and save them in a list of length d
+      # i.e. if the series of latent (s_h,t ... s_h,t+4) is (1,0,0,0,1) 
+      # time points t, t+1, t+2, t+3, before the next shock for s_h (t+4)
+      
+      if(t==T)  {seq1=list();seq1[1:length(w1)]=T}
+      else seq1=lapply(w1, function (w) c(t:(t+min(T,which( s[w,(t+1):T]==1))[1]-1)))
+      
+      # if at time t at least one sh among d undergoes a shock then update
+      if(length(w1)>0){
+        Lambda[,w0 ,t]=Lambda[,w0 ,t-1]
+        #trim to T
+        seq1=lapply(1:length(seq1),function (w)  seq1[[w]][seq1[[w]]<=T])
+        longest_len_seq=max(sapply(1:length(seq1), function(x) length(seq1[[x]])))
+        longest_seq=which.max(sapply(1:length(seq1), function(x) length(seq1[[x]])))
+        # which s_h (state) has the longest sequence of non-shocks
+        len_seqs=(sapply(1:length(seq1), function(x) length(seq1[[x]])))
+        
+      
+        
+        Pt=diag(d)+ t(Lambda[,,t])%*%(invDelta )%*%(Lambda[,,t])
+        invPt=solve(Pt)
+         
+        
+        
     for(j in 1:p){
-    # Step 1: Compute residuals u_i^{(j)} = u_i - sum_{r ≠ j} λ_r * v_{r,i}
+    #Compute residuals u_i^{(j)} = u_i - sum_{r ≠ j} λ_r * v_{r,i}
     lambda_j_excluded <- Lambda[-j, , t]
-    eps_j_excluded <- eps[,-j , drop = FALSE]
-    eta_j <- matrix(0, nrow = T, ncol = d)
-    for (i in 1:T) {
-      eta_j[i, ] <- eta[i, ] - t(lambda_j_excluded) %*% eps_j_excluded[i, ]
+    eps_j_excluded <- eps[ ,-j , drop = FALSE]
+    eps_j <- eps[t:(t+longest_len_seq-1) , j]
+   # maxlen=length(t:(t+longest_len_seq-1))
+    eta_j <- matrix(0, nrow = longest_len_seq, ncol = d)
+    for (i in t:(t+longest_len_seq-1)) {
+      lambda_j_excluded <- Lambda[-j, , t]
+      eta_j[i-t+1 , ] <- eta[i, ] - (t(lambda_j_excluded) %*% eps_j_excluded[i , ])
     }
     
-    # Step 2: Compute v_j and w_j
-    eps_j <- eps[, j]
+     
+    
     w_j <- t(eta_j) %*% eps_j
-    
-    # Step 3: Compute D_j
-   # D_j_diag <- tau^2 * psi[j, ] * phi[j, ]^2
     D_j_inv <- diag(1 / diag(Plam))
-    
-    # Step 4: Compute posterior precision and covariance
     epsj_sq <- sum(eps_j^2)
+    
     post_prec <- D_j_inv + epsj_sq * diag(d)
     post_cov <- solve(post_prec)
-    
-    # Step 5: Compute posterior mean
     post_mean <- post_cov %*% w_j
     
-    # Step 6: Sample from multivariate normal
-    Lambda[j,,t]  <- MASS::mvrnorm(1, mu = post_mean, Sigma = post_cov)
+    Lambda[j, ,t]  <- MASS::mvrnorm(1, mu = post_mean, Sigma = post_cov)[ ]
      
   }
 
-  t
+      }
+      else{Lambda[,,t]=Lambda[,,t-1]}
+    }
    
   
-  for(t in 2:25) Lambda[,  ,t]=Lambda[,  ,t-1]
-  
-  
-  
-  
-  
+  if(8==8){
+    pgg_m_and_sigma <- function(omega, precomputed){
+      return(pgg_m_sigma_(omega, precomputed$X, precomputed$invB, precomputed$KTkappaplusinvBtimesb))
+    }
+    pgg_precomputation <- function(Y, X, b, B){
+      invB <- MASS::ginv(B)
+      invBtimesb <- invB %*% (b)
+      Ykappa <- matrix(Y - rep(0.5, length(Y)), ncol=1)
+      XTkappa <- t(X) %*% Ykappa
+      KTkappaplusinvBtimesb <- XTkappa + (invBtimesb)
+      return(list(n=nrow(X), p=ncol(X), X=X, Y=Y, b=b, B=B,
+                  invB=invB, invBtimesb=c(invBtimesb), KTkappaplusinvBtimesb=
+                    c(KTkappaplusinvBtimesb)))
+    } 
+    # state 1
+    
+    #variance prior for betas
+    scale_beta=1/T
+    B=diag(3)*scale_beta# -0.0095/state$S*(state$n^-1) 
+    
+    for(h in 1:d){
+      betas=(BETA0[,h])
+      ones_indices <- which(s[h,] == 0)
+      ones_indices=setdiff(ones_indices,T)
+      which1=ones_indices+1 # which prediction can be made with this set of beta
+      
+      pred =  XBD[ones_indices,1:3]%*%betas
+      logit_phi = plogis(pred)
+      s_= matrix(1, nrow = length(which1), ncol = 1)
+      logit_phi0 = logit_phi[which(s[h,which1]==0)]
+      p_constant=1 
+      which_zero = which(runif(length(logit_phi0))<
+                           ((1-logit_phi0)/(1- logit_phi0*p_constant)))
+      s_[  which(s[h,which1]==0)[which_zero] ] = 0
+      #s_=as.vector(s_)
+      XBDH=matrix(XBD[ones_indices,1:3], ncol=3)
+      pgg_precomputed <- pgg_precomputation(s_, X = XBDH, b = betas, B = B)
+      pgg_kernel <- function(beta){
+        zs <- (pgg_precomputed$X %*% beta)
+        w <- (pgdraw::pgdraw(1, zs))
+        res <- pgg_m_and_sigma(w, precomputed = pgg_precomputed)
+        beta_ <- unbiasedmcmc:::fast_rmvnorm_chol(1, res$m, res$Cholesky)[1,]
+        return(list(beta = beta_))
+      }
+      beta_ <- pgg_kernel(betas)
+      BETA0[,h]=beta_$beta
+    }
+    
+    
+    for(h in 1:d){
+      betas=(BETA1[,h])
+      ones_indices <- which(s[h,] == 1)
+      ones_indices= setdiff(ones_indices,T)
+      which1=ones_indices+1 # which prediction can be made with this set of beta
+      
+      pred =  XBD[ones_indices,1:3]%*%betas
+      logit_phi = plogis(pred)
+      s_= matrix(1, nrow = length(which1), ncol = 1)
+      logit_phi0 = logit_phi[which(s[h,which1]==0)]
+      p_constant=1 
+      which_zero = which(runif(length(logit_phi0))<
+                           ((1-logit_phi0)/(1- logit_phi0*p_constant)))
+      s_[  which(s[h,which1]==0)[which_zero] ] = 0
+      #s_=as.vector(s_)
+      XBDH=matrix(XBD[ones_indices,1:3], ncol=3)
+      
+      pgg_precomputed <- pgg_precomputation(s_, X = XBDH, b = betas, B = B)
+      pgg_kernel <- function(beta){
+        zs <- (pgg_precomputed$X %*% beta)
+        w <- (pgdraw::pgdraw(1, zs))
+        res <- pgg_m_and_sigma(w, precomputed = pgg_precomputed)
+        beta_ <- unbiasedmcmc:::fast_rmvnorm_chol(1, res$m, res$Cholesky)[1,]
+        return(list(beta = beta_))
+      }
+      beta_ <- pgg_kernel(betas)
+      BETA1[,h]=beta_$beta
+    }
+  }
   print(iter)
   
   llik=0
@@ -269,7 +429,7 @@ for( iter in iter:1000){
   if(iter>1) Deltas=Deltas+Delta
   for(t in 1:T){
     LL_iter=Lambda[,,t]%*%t(Lambda[,,t]) 
-    if(iter>1) LL[,,t]=LL[,,t]+LL_iter
+    if(iter>0) LL[,,t]=LL[,,t]+LL_iter
     
     
     Peta=diag(d)+ t(Lambda[,,t])%*%invDelta%*%(Lambda[,,t])
@@ -280,7 +440,12 @@ for( iter in iter:1000){
     llik_lambda= llik_lambda+sum(dnorm(Lambda[,,t], 0, sd =   Plam[1,1], log=T))
     llik_ext= llik_ext+dmvnorm(eta[t,], rep(0,d), sigma = Peta, log=T)
     
-    llik=llik+dmvnorm(y[t,],mean = rep(0,p), sigma = solve(LL_iter+Delta),
+    
+    PREC=(LL_iter+Delta)
+    SIG=solve(PREC)
+    SIG=0.5*(SIG+t(SIG))
+    isSymmetric(SIG)
+    llik=llik+dmvnorm(y[t,],mean = rep(0,p), sigma = (SIG),
                       log=T)
     
   }
@@ -290,99 +455,63 @@ for( iter in iter:1000){
   plot_fig=1
   #plot results (new Lambda)
   if(plot_fig==1){
-    par(mfrow=c(3,3))
-    image(Lambda[,1,T:1],main=expression(Lambda[1]), ylab = "time")
-    image(Lambda[,2,T:1],main=expression(Lambda[2]))
-    image(Lambda[,3,T:1],main=expression(Lambda[3]))
+   # par(mfrow=c(3,3))
+  #  image(Lambda[,1,T:1],main=expression(Lambda[1]), ylab = "time")
+  #  image(Lambda[,2,T:1],main=expression(Lambda[2]))
+  #  image(Lambda[,3,T:1],main=expression(Lambda[3]))
     #show probability of shock
     #image(fhnorm[c(2,2),1,T:1], main=expression(pr[1]))
     #image(fhnorm[c(2,2),2,T:1], main=expression(pr[2]))
     #image(fhnorm[c(2,2),3,T:1], main=expression(pr[3]))
     image(s[,T:1], main="s")
   }
-}
-
+})
+iter
 par(mfrow=c(1, 1))
 par(mar=c(3,3,3,3))
 par(mfrow=c(3,1))
 
-iter=iter
+iter=iter-3
 
+Lambda[,,14]
 
-plot(llik_hist[1:iter], main="p=100 ") 
+plot(llik_hist[10:iter], main="p=100 - eta ", type="l") 
 #abline(v=5)
-points(llik_hist_ext[1:iter], col=2, pch=2) 
-points(llik_lambda_hist[1:iter], col=3, pch=3) 
+#points(llik_hist_ext[1:iter], col=2, pch=2) 
+#points(llik_lambda_hist[1:iter], col=3, pch=3) 
 #legend("center", col=c(1,2,3), pch=1:3,legend = c("loglik", "logprior eta | lambda", "logprior lambda"))
 
-plot(llik_hist[1:iter], main="p=100") 
+ 
 #abline(v=5)
-plot(llik_hist_ext[1:iter], col=2, pch=2) 
-plot(llik_lambda_hist[1:iter], col=3, pch=3) 
-legend("topright", col=c(1,2,3), pch=1:3,legend = c("loglik", "logprior eta | lambda", "logprior lambda"))
+iter=iter-10
 
-par(mfrow=c(1,1))
-plot(llik_hist[1:iter]+llik_hist_ext[1:iter]+llik_lambda_hist[1:iter], main="logposterior") 
-abline(v=5)
-points(llik_hist_ext[1:iter], col=2, pch=2) 
-points(llik_lambda_hist[1:iter], col=3, pch=3) 
-legend("bottomleft", col=c(1,2,3), pch=1:3,legend = c("loglik", "logprior eta | lambda", "logprior lambda"))
+plot(llik_hist_ext[1:iter], col=2, pch=2, type="l") 
+plot(llik_lambda_hist[1:iter], col=3, pch=3, type="l") 
+legend("topright", col=c(1,2,3), pch=1:3,
+       cex=0.8,legend = c("loglik", "logprior eta | lambda", "logprior lambda"))
 
-title("non problematic, p=10")
+  
 
-etaiter 
-(eta)
-Lambda
 
-iter
 
 LL=LL/iter
 Deltas=Deltas/iter
 par(mar=c(3,3,3,3)-c(2.53,2.53,1,2.53))
 
-par(mfrow=c(1,2))
 
 
-for(i in c(3)){ 
- # LL[which.min(LL)]=- max(LL)
-  image(((LL[,,i]       ) ) ,axes=F,
-        col = cm.colors(8),
+par(mfrow=c(2,7))
+
+pp=p
+for(i in c(1,5,9, 13,17,21,25)){ 
+# LL[,,i][which.min(LL[,,i])]=- max(LL[,,i])
+  image(((LL[,,i]    )[1:pp,1:pp] ) ,axes=F,
+        col = cm.colors(7),
         main = bquote(hat(Omega)[.(i)] )) }
-for(i in c(3)){
+
+
+for(i in c(1,5,9,13,17,21,25)){ 
 #  LL[which.min(LL)]=- max(LL)
 #  Lambda_true[,,i][which.min( Lambda_true[,,i])]=-max(( Lambda_true[,,i]))
-  image(((tcrossprod(Lambda_true[,,i]) )   )   ,
-        axes=F,  col = cm.colors(8), main = bquote( Omega[.(i)]^{-1})) }
-
-range( tcrossprod(Lambda[,,1])- tcrossprod(Lambda_true[,,1]))
-Delta
-Delta_true
-Lambda
-Lambda_true[,,13]
-'invPlam=  diag(1/diag(Plam))
-EPS_LAMBDA=(sapply(1:25, function (t) eps[t,]%*%((Lambda_[, , t]))))
-
-for ( t in 1:25){
-  for (j in 1:p){
-    # j fixed, i have Lambda_t (time fixed  and d components)
-    epsj_act=eps[ ,j]
-    
-    epsj2I=c(crossprod(epsj_act))*diag(d)
-    
-    #EPS_LAMBDA=(sapply(1:25, function (t) eps[t,]%*%((Lambda[, , t]))))
-    etaj= eta - t(EPS_LAMBDA) +t(sapply(1:25, function (t) eps[t,j]%*%((Lambda[j, , t]))))
-   ## nb different than   t((eps[,j])*(Lambda[j, , ]))
-    wj=(eps[ ,j])%*% etaj
-    var_L=solve(invPlam+epsj2I)
-    mu_L=var_L%*%t(wj)
-    lj=mvnfast::rmvn(1, mu = mu_L ,sigma  =  var_L)
-    #L_[j,,t] = lj
-    #L[j,]=t(t(L_[j,])) * Theta[j,]  #sparse
-    Lambda_[j, ,t]=lj
-    #update the t-th row of the bog matrix
-    EPS_LAMBDA[,t]=eps[t,]%*%((Lambda_[, , t]))
-  }
-}
-
-Lambda=Lambda_*Psi
-'
+  image(((tcrossprod(Lambda_true[,,i]) )[1:pp,1:pp]  )   ,
+        axes=F,  col = cm.colors(20), main = bquote( Omega[.(i)]^{-1})) }
