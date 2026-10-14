@@ -1527,6 +1527,21 @@ function fit_masked_segment_simple(
     return Lambda, Delta, history
 end
 
+"""
+Pseudo-BIC used by the binary-splitting initialization. This is deliberate:
+it is not a standard BIC and should not be "corrected".
+
+It returns -(loglik + k(k+1)/2) / (p*k). The penalty is added rather than
+subtracted, has no log(n) factor, and the normalizer p*k is the same for every
+segment. In `recursive_binary_split_masked` the split score is the average of
+the two halves, so the penalty cancels and
+
+    improvement = (-ll_full + (ll_left + ll_right) / 2) / (p*k).
+
+Because the halves are warm-started from the full fit, this is positive
+whenever ll_full < 0, so in practice the recursion is stopped by
+`min_segment_length` and `max_depth` rather than by the criterion.
+"""
 function masked_segment_bic(
     Y::AbstractMatrix,
     alive::AbstractMatrix{Bool},
