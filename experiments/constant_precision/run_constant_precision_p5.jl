@@ -28,10 +28,10 @@ using Statistics
 using Printf
 using DelimitedFiles
 
-include("BirthDeathGraphicalModels.jl")
+include(joinpath(@__DIR__, "..", "..", "src", "BirthDeathGraphicalModels.jl"))
 using .BirthDeathGraphicalModels
 
-include("ControlledPrecisionExperiments.jl")
+include(joinpath(@__DIR__, "..", "..", "src", "ControlledPrecisionExperiments.jl"))
 using .ControlledPrecisionExperiments
 
 const P = 5
