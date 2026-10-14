@@ -122,6 +122,34 @@ scale) and `minimum_active = 6`, with 20 trajectories per rank. The CSVs are
   the default fit usually reaches a higher log posterior than the oracle. The
   posterior's best mode is then not near the true shocks.
 
+### Network-informed shock probability
+
+`network_shock_test.jl` simulates shocks with a probability specific to each
+variable,
+
+    logit π_jt = a₀ + a_b Σ_{l born at t} |ρ̃_{t,jl}| + a_d Σ_{l dying at t} |ρ_{t−1,jl}|,
+
+with a₀ = −2.5 and a_b = a_d = 4. It fits three models: the matching network
+model (`shock_covariates = :network`, prior N(0, 2²) on the coefficients), the
+current counts model, and the network model started from the truth (oracle).
+The design is p = 10, k = 5, τ_a = 1.5 and `minimum_active = 6`, with 20
+trajectories. The CSV is
+`results/experiment2/network_p10_k5_tau150_min6.csv`.
+
+| | network fit | counts fit | oracle |
+|---|---|---|---|
+| shock AUROC | 0.50 ± 0.09 | 0.66 ± 0.07 | 0.98 ± 0.02 |
+| shock recall / precision | 0.07 / 0.11 | 0.07 / 0.11 | 0.97 / 1.00 |
+| off-diagonal RV | 0.72 | 0.72 | 0.86 |
+| estimated a_b / a_d (truth 4 / 4) | 0.01 / −0.29 | | 2.52 / 3.07 |
+
+The network fit computes its covariates from its own estimate of the network.
+At k = 5 that estimate is not good enough to locate the shocks, so the slopes
+are estimated near zero and the covariates add no information. The counts
+model ranks shocks better (AUROC 0.66) because the true shocks cluster at
+event times, which its covariates capture without relying on the estimated
+network.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
