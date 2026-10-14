@@ -398,7 +398,9 @@ function compare_precision_sequences(
             dimension=length(idx),
             rv=rv_coefficient(A, B),
             offdiag_rv=offdiag_rv(A, B),
-            partial_rv=rv_coefficient(partial_A, partial_B),
+            # Off-diagonal only: the unit diagonal of the partial-correlation
+            # matrix would otherwise dominate the RV, as in `rv` above.
+            partial_rv=offdiag_rv(partial_A, partial_B),
             relative_frobenius=norm(D) / max(norm(A), eps(Float64)),
             rmse=sqrt(mean(abs2, D))
         ))

@@ -15,6 +15,8 @@ export TensorPrecisionModel,
        active_precision_errors,
        compare_active_precision_matrices,
        rv_coefficient,
+       offdiagonal_rv,
+       partial_correlation_rv,
        run_example
 
 # ============================================================================
@@ -2471,6 +2473,37 @@ function rv_coefficient(A::AbstractMatrix, B::AbstractMatrix)
     return dot(A, B) / denominator
 end
 
+"""Copy of A with the diagonal set to zero."""
+function offdiagonal_part(A::AbstractMatrix)
+    B = Matrix{Float64}(A)
+    B[diagind(B)] .= 0.0
+    return B
+end
+
+"""
+Off-diagonal partial correlations -Omega_ij / sqrt(Omega_ii Omega_jj), with
+the diagonal set to zero.
+"""
+function offdiagonal_partial_correlation(Omega::AbstractMatrix)
+    d = sqrt.(diag(Omega))
+    return offdiagonal_part(-Matrix{Float64}(Omega) ./ (d * d'))
+end
+
+"""
+RV computed on off-diagonal entries only. The full-matrix RV is dominated by
+the diagonal, so it can be high when the off-diagonal structure is poorly
+recovered. NaN when either matrix has no nonzero off-diagonal entries.
+"""
+offdiagonal_rv(A::AbstractMatrix, B::AbstractMatrix) =
+    rv_coefficient(offdiagonal_part(A), offdiagonal_part(B))
+
+"""Off-diagonal RV on the partial-correlation scale."""
+partial_correlation_rv(A::AbstractMatrix, B::AbstractMatrix) =
+    rv_coefficient(
+        offdiagonal_partial_correlation(A),
+        offdiagonal_partial_correlation(B)
+    )
+
 function active_precision_errors(
     Lambda_true::Vector{Matrix{Float64}},
     Delta_true::AbstractVector,
@@ -2494,7 +2527,9 @@ function active_precision_errors(
                 mean_absolute_error=0.0,
                 mean_relative_error=NaN,
                 root_mean_squared_error=0.0,
-                rv=NaN
+                rv=NaN,
+                offdiagonal_rv=NaN,
+                partial_correlation_rv=NaN
             ))
             continue
         end
@@ -2508,6 +2543,8 @@ function active_precision_errors(
             mean_absolute_error / max(mean(abs.(true_t.Omega)), eps(Float64))
         root_mean_squared_error = sqrt(mean(abs2.(difference)))
         rv = rv_coefficient(true_t.Omega, est_t.Omega)
+        offdiag_rv = offdiagonal_rv(true_t.Omega, est_t.Omega)
+        partial_rv = partial_correlation_rv(true_t.Omega, est_t.Omega)
 
         push!(results, (
             time=t,
@@ -2517,7 +2554,9 @@ function active_precision_errors(
             mean_absolute_error=mean_absolute_error,
             mean_relative_error=mean_relative_error,
             root_mean_squared_error=root_mean_squared_error,
-            rv=rv
+            rv=rv,
+            offdiagonal_rv=offdiag_rv,
+            partial_correlation_rv=partial_rv
         ))
     end
 
@@ -2689,6 +2728,10 @@ function run_example(; seed::Int=20260722)
         finite_mean(x.root_mean_squared_error for x in diagnostics))
     println("Mean RV coefficient: ",
         finite_mean(x.rv for x in diagnostics))
+    println("Mean off-diagonal RV: ",
+        finite_mean(x.offdiagonal_rv for x in diagnostics))
+    println("Mean partial-correlation RV: ",
+        finite_mean(x.partial_correlation_rv for x in diagnostics))
 
     return (
         simulation=sim,
