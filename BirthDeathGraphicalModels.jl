@@ -184,6 +184,14 @@ end
 
 """
 Generate nonconstant birth and death times from shifted geometric laws.
+
+`minimum_active` is the smallest number of variables allowed to be active at
+any time. A death that would take the active count below it is postponed one
+period at a time until a birth makes room. Use `k + 1` to respect assumption
+(S4), p_t > k. The default of 1 only rules out time points with no active
+variables. The adjustment uses no random numbers, so the other draws are
+unchanged, and exit then depends only on past activity, so the mechanism is
+still predetermined (S-AR).
 """
 function generate_birth_death_times(
     p::Int,
@@ -195,6 +203,7 @@ function generate_birth_death_times(
     maximum_lifetime::Int=T,
     allow_birth_at_T::Bool=true,
     shuffle_variables::Bool=true,
+    minimum_active::Int=1,
     rng::AbstractRNG=Random.default_rng()
 )
     p >= 1 || throw(ArgumentError("p must be at least 1"))
@@ -209,11 +218,16 @@ function generate_birth_death_times(
         throw(ArgumentError("minimum_lifetime must be at least 1"))
     maximum_lifetime >= minimum_lifetime ||
         throw(ArgumentError("maximum_lifetime must be at least minimum_lifetime"))
+    0 <= minimum_active <= p ||
+        throw(ArgumentError("minimum_active must be in 0:p"))
 
     birth_time = Vector{Int}(undef, p)
     death_time = Vector{Int}(undef, p)
 
     n_initial = round(Int, initial_alive_fraction * p)
+    n_initial >= minimum_active || throw(ArgumentError(
+        "initial_alive_fraction * p = $n_initial is below minimum_active = $minimum_active"
+    ))
     initial_variables = falses(p)
     if n_initial > 0
         initial_variables[randperm(rng, p)[1:n_initial]] .= true
@@ -237,6 +251,26 @@ function generate_birth_death_times(
         )
 
         death_time[j] = min(birth_time[j] + lifetime - 1, T)
+    end
+
+    # Postpone deaths that would leave fewer than minimum_active variables.
+    # The count at t-1 satisfies the bound, so a shortfall at t can only come
+    # from variables whose last active time is t-1.
+    for t in 2:T
+        n_active = count(j -> birth_time[j] <= t <= death_time[j], 1:p)
+        while n_active < minimum_active
+            candidates = [
+                j for j in 1:p
+                if death_time[j] == t - 1 &&
+                   death_time[j] - birth_time[j] + 1 < maximum_lifetime
+            ]
+            isempty(candidates) && throw(ArgumentError(
+                "cannot keep $minimum_active variables active at t=$t " *
+                "without exceeding maximum_lifetime"
+            ))
+            death_time[first(candidates)] = t
+            n_active += 1
+        end
     end
 
     if shuffle_variables
@@ -1951,6 +1985,14 @@ function _EM_time_varying_core(
     niter >= 1 || throw(ArgumentError("niter must be at least one"))
 
     alive = BitMatrix(alive_input)
+
+    active_counts = vec(sum(alive, dims=2))
+    n_empty = count(==(0), active_counts)
+    n_low_rank = count(m -> 0 < m <= k, active_counts)
+    n_empty > 0 &&
+        @warn "Some time points have no active variables" n_empty
+    n_low_rank > 0 &&
+        @warn "Some time points have p_t <= k, so the factor term is not low rank there (assumption S4)" n_low_rank k
 
     function clamp_continuation_gamma!(gamma_matrix::AbstractMatrix)
         for t in 2:T, j in 1:p
