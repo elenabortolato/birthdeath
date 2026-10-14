@@ -75,9 +75,14 @@ Generate one active spell per variable.
 
 `birth_time[j]` is the first active time and `death_time[j]` is the final
 active time. A birth always receives a new loading row. During a continuation,
-the row changes with probability
+the row changes with a probability set by `shock_rule`:
 
-    logistic(a0 + a_event * (births[t] + deaths[t])).
+- `:counts` (default): logistic(a0 + a_event * (births[t] + deaths[t])),
+  shared by all continuing variables;
+- `:network`: logistic(a0 + a_birth * xb[j,t] + a_death * xd[j,t]), where
+  xb and xd are the summed absolute partial correlations of j with the
+  variables born and dying at t (see `network_event_covariates_at`). The
+  returned `pi_time` is then a p x T matrix.
 
 Inactive entries of `Y` and `Lambda` are stored as zero and must be interpreted
 together with `alive`.
@@ -96,8 +101,13 @@ function generate_birth_death_data(
     Δ_value::Union{Nothing, Float64}=nothing,
     probability_min::Float64=1e-6,
     probability_max::Float64=1.0 - 1e-6,
+    shock_rule::Symbol=:counts,
+    a_birth::Float64=a_event,
+    a_death::Float64=a_event,
     rng::AbstractRNG=Random.default_rng()
 )
+    shock_rule in (:counts, :network) ||
+        throw(ArgumentError("shock_rule must be :counts or :network"))
     p >= 1 || throw(ArgumentError("p must be positive"))
     k >= 1 || throw(ArgumentError("k must be positive"))
     T >= 1 || throw(ArgumentError("T must be positive"))
@@ -135,7 +145,44 @@ function generate_birth_death_data(
     Delta = fill(Float64(effective_Delta_value), p)
     s_true = falses(p, T)
 
+    if shock_rule == :network
+        pi_time = fill(
+            clamp(inverse_logit(a0), probability_min, probability_max), p, T
+        )
+        for t in 1:T
+            # Births get new rows, continuing rows keep their previous value;
+            # this is the pre-shock state the covariates are computed from.
+            for j in 1:p
+                alive[t, j] || continue
+                if is_birth(alive, t, j)
+                    view(Lambda[t], j, :) .= initial_sd .* randn(rng, k)
+                    s_true[j, t] = true
+                else
+                    view(Lambda[t], j, :) .= view(Lambda[t - 1], j, :)
+                end
+            end
+            t == 1 && continue
+
+            birth_x, death_x = network_event_covariates_at(
+                Lambda[t - 1], Lambda[t], Delta, alive, t
+            )
+            for j in 1:p
+                is_continuation(alive, t, j) || continue
+                pi_time[j, t] = clamp(
+                    inverse_logit(a0 + a_birth * birth_x[j] + a_death * death_x[j]),
+                    probability_min,
+                    probability_max
+                )
+                if rand(rng) < pi_time[j, t]
+                    view(Lambda[t], j, :) .+= change_sd .* randn(rng, k)
+                    s_true[j, t] = true
+                end
+            end
+        end
+    end
+
     for t in 1:T
+        shock_rule == :counts || break
         for j in 1:p
             alive[t, j] || continue
 
@@ -590,6 +637,145 @@ function shock_probabilities_from_coefficients(
     return pi_time
 end
 
+"""
+Per-variable shock probabilities from p x T covariate matrices: the
+network-informed parameterization, where each continuing variable has its own
+covariates.
+"""
+function shock_probabilities_from_coefficients(
+    coefficients::AbstractVector,
+    birth_covariate::AbstractMatrix,
+    death_covariate::AbstractMatrix;
+    probability_min::Float64=1e-12,
+    probability_max::Float64=1.0 - 1e-12
+)
+    length(coefficients) == 3 ||
+        throw(DimensionMismatch("coefficients must have length 3"))
+    size(birth_covariate) == size(death_covariate) ||
+        throw(DimensionMismatch("birth and death covariates must have equal sizes"))
+
+    eta = coefficients[1] .+
+          coefficients[2] .* birth_covariate .+
+          coefficients[3] .* death_covariate
+    return clamp.(inverse_logit.(eta), probability_min, probability_max)
+end
+
+"""
+Shock probability of variable j at time t. `pi` is either a length-T vector
+shared by all variables or a p x T matrix with one probability per variable.
+"""
+shock_probability(pi::AbstractVector, j::Int, t::Int) = pi[t]
+shock_probability(pi::AbstractMatrix, j::Int, t::Int) = pi[j, t]
+
+covariate_value(x::AbstractVector, j::Int, t::Int) = x[t]
+covariate_value(x::AbstractMatrix, j::Int, t::Int) = x[j, t]
+
+function check_time_array_size(x::AbstractVector, p::Int, T::Int, name::String)
+    length(x) == T || throw(DimensionMismatch("$name must have length $T"))
+end
+function check_time_array_size(x::AbstractMatrix, p::Int, T::Int, name::String)
+    size(x) == (p, T) || throw(DimensionMismatch("$name must have size ($p,$T)"))
+end
+
+"""
+Absolute off-diagonal partial correlations of the precision matrix built from
+the given loading rows and diagonal precisions on `idx`. Returns a p x p
+matrix indexed by global variable, zero outside `idx`.
+"""
+function abs_partial_correlations(
+    Lambda_rows::AbstractMatrix,
+    Delta::AbstractVector,
+    idx::AbstractVector{Int}
+)
+    p = size(Lambda_rows, 1)
+    R = zeros(Float64, p, p)
+    isempty(idx) && return R
+    L = Lambda_rows[idx, :]
+    Omega = L * L' + Diagonal(Delta[idx])
+    d = sqrt.(diag(Omega))
+    R[idx, idx] .= abs.(Omega ./ (d * d'))
+    for j in idx
+        R[j, j] = 0.0
+    end
+    return R
+end
+
+"""
+Network-informed event covariates, as p x T matrices. For a variable j that
+continues from t-1 to t:
+
+    death covariate = sum over l dying at t of |rho_{t-1, jl}|,
+    birth covariate = sum over l born at t of |rho~_{t, jl}|,
+
+where rho_{t-1} are the partial correlations of Omega_{t-1} on the active set
+at t-1, and rho~_t those of the pre-shock precision at t: continuing rows at
+their t-1 values, newly born rows at their time-t values. Using the pre-shock
+precision keeps a variable's own shock out of its shock probability. Entries
+for non-continuing pairs are zero.
+"""
+function network_event_covariates(
+    Lambda::Vector{<:AbstractMatrix},
+    Delta::AbstractVector,
+    alive::AbstractMatrix{Bool}
+)
+    T, p = size(alive)
+    birth_covariate = zeros(Float64, p, T)
+    death_covariate = zeros(Float64, p, T)
+    for t in 2:T
+        birth_t, death_t = network_event_covariates_at(
+            Lambda[t - 1], Lambda[t], Delta, alive, t
+        )
+        birth_covariate[:, t] .= birth_t
+        death_covariate[:, t] .= death_t
+    end
+    return birth_covariate, death_covariate
+end
+
+"""
+Network-informed event covariates at a single time t >= 2, as length-p
+vectors. Only the rows of `Lambda_t` belonging to variables born at t are
+used, so `Lambda_t` may hold either pre-shock or post-shock values for the
+continuing variables.
+"""
+function network_event_covariates_at(
+    Lambda_previous::AbstractMatrix,
+    Lambda_t::AbstractMatrix,
+    Delta::AbstractVector,
+    alive::AbstractMatrix{Bool},
+    t::Int
+)
+    p = size(alive, 2)
+    birth_covariate = zeros(Float64, p)
+    death_covariate = zeros(Float64, p)
+
+    continuing = [j for j in 1:p if alive[t, j] && alive[t - 1, j]]
+    isempty(continuing) && return birth_covariate, death_covariate
+    born = [l for l in 1:p if alive[t, l] && !alive[t - 1, l]]
+    dying = [l for l in 1:p if alive[t - 1, l] && !alive[t, l]]
+
+    if !isempty(dying)
+        R = abs_partial_correlations(
+            Lambda_previous, Delta, findall(view(alive, t - 1, :))
+        )
+        for j in continuing
+            death_covariate[j] = sum(R[j, l] for l in dying)
+        end
+    end
+
+    if !isempty(born)
+        pre_shock = copy(Lambda_previous)
+        for l in born
+            pre_shock[l, :] .= view(Lambda_t, l, :)
+        end
+        R = abs_partial_correlations(pre_shock, Delta, findall(view(alive, t, :)))
+        for j in continuing
+            birth_covariate[j] = sum(R[j, l] for l in born)
+        end
+    end
+
+    return birth_covariate, death_covariate
+end
+
 # ============================================================================
 # Posterior objectives
 # ============================================================================
@@ -597,7 +783,7 @@ end
 function log_posterior(
     state::TensorPrecisionModel,
     gamma::AbstractMatrix,
-    pi_time::AbstractVector;
+    pi_time::AbstractArray;
     sigma_initial::Float64=1.0,
     sigma_active::Float64=1.0,
     sigma_inactive::Float64=0.01,
@@ -608,8 +794,7 @@ function log_posterior(
     p, k = size(state.Lambda[1])
     size(gamma) == (p, T) ||
         throw(DimensionMismatch("gamma must have size ($p,$T)"))
-    length(pi_time) == T ||
-        throw(DimensionMismatch("pi_time must have length $T"))
+    check_time_array_size(pi_time, p, T, "pi_time")
 
     inv_initial = 1.0 / sigma_initial^2
     inv_active = 1.0 / sigma_active^2
@@ -646,7 +831,7 @@ function log_posterior(
                 logprior += value
             end
 
-            pi_t = clamp(Float64(pi_time[t]), 1e-12, 1.0 - 1e-12)
+            pi_t = clamp(Float64(shock_probability(pi_time, j, t)), 1e-12, 1.0 - 1e-12)
             shock_value =
                 gamma_jt * log(pi_t) +
                 (1.0 - gamma_jt) * log1p(-pi_t)
@@ -693,7 +878,7 @@ end
 function full_log_posterior(
     state::TensorPrecisionModel,
     gamma::AbstractMatrix,
-    pi_time::AbstractVector,
+    pi_time::AbstractArray,
     coefficients::AbstractVector;
     sigma_initial::Float64=1.0,
     sigma_active::Float64=1.0,
@@ -729,14 +914,13 @@ end
 
 function E_step_independent(
     state::TensorPrecisionModel,
-    pi_time::AbstractVector;
+    pi_time::AbstractArray;
     sigma_active::Float64=1.0,
     sigma_inactive::Float64=0.01
 )
     T = length(state.DiffLambda)
     p, k = size(state.DiffLambda[1])
-    length(pi_time) == T ||
-        throw(DimensionMismatch("pi_time must have length $T"))
+    check_time_array_size(pi_time, p, T, "pi_time")
 
     gamma = zeros(Float64, p, T)
     active_constant = -0.5 * k * log(2pi * sigma_active^2)
@@ -745,11 +929,11 @@ function E_step_independent(
     inv_inactive = 1.0 / sigma_inactive^2
 
     for t in 1:T
-        pi_t = clamp(Float64(pi_time[t]), 1e-12, 1.0 - 1e-12)
-        log_pi = log(pi_t)
-        log_one_minus_pi = log1p(-pi_t)
-
         for j in 1:p
+            pi_t = clamp(Float64(shock_probability(pi_time, j, t)), 1e-12, 1.0 - 1e-12)
+            log_pi = log(pi_t)
+            log_one_minus_pi = log1p(-pi_t)
+
             if !state.alive[t, j]
                 gamma[j, t] = 0.0
             elseif is_birth(state.alive, t, j)
@@ -779,7 +963,7 @@ A safeguarded bisection solves the one-dimensional concave problem.
 """
 function E_step_independent_advanced(
     state::TensorPrecisionModel,
-    pi_time::AbstractVector;
+    pi_time::AbstractArray;
     sigma_active::Float64=1.0,
     sigma_inactive::Float64=0.01,
     gamma_prior_alpha::Float64=1.0,
@@ -798,8 +982,7 @@ function E_step_independent_advanced(
 
     T = length(state.DiffLambda)
     p, k = size(state.DiffLambda[1])
-    length(pi_time) == T ||
-        throw(DimensionMismatch("pi_time must have length $T"))
+    check_time_array_size(pi_time, p, T, "pi_time")
 
     gamma = zeros(Float64, p, T)
     active_constant = -0.5 * k * log(2pi * sigma_active^2)
@@ -811,11 +994,11 @@ function E_step_independent_advanced(
     beta_minus_one = gamma_prior_beta - 1.0
 
     for t in 1:T
-        pi_t = clamp(Float64(pi_time[t]), 1e-12, 1.0 - 1e-12)
-        log_pi = log(pi_t)
-        log_one_minus_pi = log1p(-pi_t)
-
         for j in 1:p
+            pi_t = clamp(Float64(shock_probability(pi_time, j, t)), 1e-12, 1.0 - 1e-12)
+            log_pi = log(pi_t)
+            log_one_minus_pi = log1p(-pi_t)
+
             if !state.alive[t, j]
                 gamma[j, t] = 0.0
                 continue
@@ -884,7 +1067,7 @@ end
 function update_Delta_bayes!(
     state::TensorPrecisionModel,
     gamma::AbstractMatrix,
-    pi_time::AbstractVector;
+    pi_time::AbstractArray;
     a::Float64=1.0,
     b::Float64=1.0,
     step::Float64=0.1,
@@ -1242,8 +1425,8 @@ function update_shock_coefficients!(
     coefficients::Vector{Float64},
     gamma::AbstractMatrix,
     alive::AbstractMatrix{Bool},
-    birth_covariate::AbstractVector,
-    death_covariate::AbstractVector;
+    birth_covariate::AbstractArray,
+    death_covariate::AbstractArray;
     prior_mean::AbstractVector=fill(0.0, 3),
     prior_sd::AbstractVector=fill(2.0, 3),
     maxiter::Int=25,
@@ -1257,10 +1440,8 @@ function update_shock_coefficients!(
         throw(DimensionMismatch("gamma must have size ($p,$T)"))
     length(coefficients) == 3 ||
         throw(DimensionMismatch("coefficients must have length 3"))
-    length(birth_covariate) == T ||
-        throw(DimensionMismatch("birth_covariate must have length $T"))
-    length(death_covariate) == T ||
-        throw(DimensionMismatch("death_covariate must have length $T"))
+    check_time_array_size(birth_covariate, p, T, "birth_covariate")
+    check_time_array_size(death_covariate, p, T, "death_covariate")
     length(prior_mean) == 3 ||
         throw(DimensionMismatch("prior_mean must have length 3"))
     length(prior_sd) == 3 ||
@@ -1272,10 +1453,13 @@ function update_shock_coefficients!(
     responses = Float64[]
 
     for t in 2:T
-        x_t = (1.0, Float64(birth_covariate[t]), Float64(death_covariate[t]))
         for j in 1:p
             if is_continuation(alive, t, j)
-                push!(rows, x_t)
+                push!(rows, (
+                    1.0,
+                    Float64(covariate_value(birth_covariate, j, t)),
+                    Float64(covariate_value(death_covariate, j, t))
+                ))
                 push!(responses, clamp(Float64(gamma[j, t]), 0.0, 1.0))
             end
         end
@@ -1923,6 +2107,7 @@ function _EM_time_varying_core(
     coefficient_damping::Float64=0.10,
     coefficient_update_interval::Int=1,
     standardize_event_counts::Bool=false,
+    shock_covariates::Symbol=:counts,
 
     niter::Int=100,
     step_delta::Float64=0.01,
@@ -1983,6 +2168,9 @@ function _EM_time_varying_core(
     annealed_iterations >= 1 ||
         throw(ArgumentError("annealed_iterations must be at least one"))
     niter >= 1 || throw(ArgumentError("niter must be at least one"))
+
+    shock_covariates in (:counts, :network) ||
+        throw(ArgumentError("shock_covariates must be :counts or :network"))
 
     alive = BitMatrix(alive_input)
 
@@ -2103,6 +2291,17 @@ function _EM_time_varying_core(
     birth_covariate = shock_prior.birth_covariate
     death_covariate = shock_prior.death_covariate
 
+    # :counts uses the birth and death counts at t, shared by all variables.
+    # :network gives each continuing variable its own covariates, the summed
+    # absolute partial correlations with the variables born and dying at t
+    # (see network_event_covariates). They depend on the parameters, so they
+    # are recomputed from the current estimate at every iteration and held
+    # fixed within it.
+    if shock_covariates == :network
+        birth_covariate, death_covariate =
+            network_event_covariates(Lambda, Delta, alive)
+    end
+
     shock_coefficients = [a0_init, a_birth_init, a_death_init]
     pi_time = shock_probabilities_from_coefficients(
         shock_coefficients,
@@ -2141,7 +2340,7 @@ function _EM_time_varying_core(
     delta_accepted_history = Bool[]
     sigma_inactive_history = Float64[]
     coefficient_history = Vector{Vector{Float64}}()
-    pi_time_history = Vector{Vector{Float64}}()
+    pi_time_history = Vector{Array{Float64}}()
     coefficient_objective_history = Float64[]
     coefficient_accepted_history = Bool[]
     gamma_mean_history = Float64[]
@@ -2193,6 +2392,16 @@ function _EM_time_varying_core(
             sigma_inactive_start,
             sigma_inactive
         )
+
+        if shock_covariates == :network && iter > 1
+            birth_covariate, death_covariate =
+                network_event_covariates(state.Lambda, state.Delta, alive)
+            pi_time = shock_probabilities_from_coefficients(
+                shock_coefficients,
+                birth_covariate,
+                death_covariate
+            )
+        end
 
         if iter > 1
             gamma = E_step_independent_advanced(
@@ -2325,7 +2534,9 @@ function _EM_time_varying_core(
         push!(gamma_max_history, gamma_summary.maximum)
 
         if verbose
-            mean_pi = T > 1 ? mean(view(pi_time, 2:T)) : pi_time[1]
+            mean_pi = pi_time isa AbstractMatrix ?
+                finite_mean(pi_time[j, t] for t in 2:T for j in 1:p if is_continuation(alive, t, j)) :
+                T > 1 ? mean(view(pi_time, 2:T)) : pi_time[1]
             println(
                 "iter=", iter,
                 " Q=", round(objective_after, digits=6),
@@ -2356,6 +2567,10 @@ function _EM_time_varying_core(
         end
     end
 
+    if shock_covariates == :network
+        birth_covariate, death_covariate =
+            network_event_covariates(state.Lambda, state.Delta, alive)
+    end
     pi_time = shock_probabilities_from_coefficients(
         shock_coefficients,
         birth_covariate,

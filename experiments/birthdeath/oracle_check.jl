@@ -20,6 +20,9 @@
 #       p=10 k=5 seeds=1:20 tau_active=1.5 minimum_active=6 \
 #       out=results/experiment2/oracle_p10_k5.csv
 #
+# The functions oracle_em and final_gamma_and_logposterior are also used by
+# network_shock_test.jl.
+#
 
 include(joinpath(@__DIR__, "run_experiment2.jl"))
 
@@ -31,12 +34,29 @@ function posterior_settings(k, tau_active)
     )
 end
 
+"""
+Event covariates for the shock probabilities: birth and death counts shared
+by all variables (`:counts`), or the network-informed covariates computed
+from the current state (`:network`).
+"""
+function event_covariates(state, alive, shock_covariates)
+    if shock_covariates == :network
+        return BGM.network_event_covariates(state.Lambda, state.Delta, alive)
+    end
+    births, deaths = BGM.birth_death_counts(alive)
+    return Float64.(births), Float64.(deaths)
+end
+
 """E-step at the current state, then the log posterior used by the fit."""
-function final_gamma_and_logposterior(state, coefficients, covariates, k, tau_active)
+function final_gamma_and_logposterior(
+    state, coefficients, alive, k, tau_active;
+    shock_covariates=:counts,
+    coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
+    coefficient_prior_sd=COEFFICIENT_PRIOR_SD
+)
     sigmas = posterior_settings(k, tau_active)
-    pi_time = BGM.shock_probabilities_from_coefficients(
-        coefficients, covariates.births, covariates.deaths
-    )
+    birth_x, death_x = event_covariates(state, alive, shock_covariates)
+    pi_time = BGM.shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
     gamma = BGM.E_step_independent_advanced(
         state, pi_time;
         sigma_active=sigmas.sigma_active,
@@ -47,8 +67,8 @@ function final_gamma_and_logposterior(state, coefficients, covariates, k, tau_ac
         sigmas...,
         a_delta=A_DELTA,
         b_delta=B_DELTA,
-        coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
-        coefficient_prior_sd=COEFFICIENT_PRIOR_SD
+        coefficient_prior_mean=coefficient_prior_mean,
+        coefficient_prior_sd=coefficient_prior_sd
     )
     return gamma, logposterior
 end
@@ -58,21 +78,34 @@ Generalized EM started from the true parameters. The steps and settings are
 those of EM_time_varying in fit_experiment2, except that the E-step also runs
 at the first iteration, so the shock probabilities start from the truth.
 """
-function oracle_em(sim, k, seed; tau_active, niter=500, tol=1e-6)
+function oracle_em(
+    sim, k, seed;
+    tau_active,
+    true_coefficients=[A0, A_EVENT, A_EVENT],
+    shock_covariates=:counts,
+    coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
+    coefficient_prior_sd=COEFFICIENT_PRIOR_SD,
+    niter=500,
+    tol=1e-6
+)
     rng = MersenneTwister(20_000 + seed)
     sigmas = posterior_settings(k, tau_active)
-    births, deaths = BGM.birth_death_counts(sim.alive)
-    covariates = (births=Float64.(births), deaths=Float64.(deaths))
+    priors = (
+        coefficient_prior_mean=coefficient_prior_mean,
+        coefficient_prior_sd=coefficient_prior_sd
+    )
 
     state = BGM.make_tensor_precision_model(
         [copy(L) for L in sim.Lambda], copy(sim.Delta), sim.Y, sim.alive
     )
-    coefficients = [A0, A_EVENT, A_EVENT]
-    pi_time = BGM.shock_probabilities_from_coefficients(
-        coefficients, covariates.births, covariates.deaths
-    )
+    coefficients = copy(true_coefficients)
 
     for iter in 1:niter
+        # Network covariates depend on the parameters: recompute them from
+        # the current state and hold them fixed within the iteration.
+        birth_x, death_x = event_covariates(state, sim.alive, shock_covariates)
+        pi_time = BGM.shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
+
         gamma = BGM.E_step_independent_advanced(
             state, pi_time;
             sigma_active=sigmas.sigma_active,
@@ -80,9 +113,7 @@ function oracle_em(sim, k, seed; tau_active, niter=500, tol=1e-6)
         )
         before, _ = BGM.full_log_posterior(
             state, gamma, pi_time, coefficients;
-            sigmas..., a_delta=A_DELTA, b_delta=B_DELTA,
-            coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
-            coefficient_prior_sd=COEFFICIENT_PRIOR_SD
+            sigmas..., a_delta=A_DELTA, b_delta=B_DELTA, priors...
         )
 
         BGM.update_Delta_bayes!(
@@ -97,31 +128,29 @@ function oracle_em(sim, k, seed; tau_active, niter=500, tol=1e-6)
 
         if iter > 1
             update = BGM.update_shock_coefficients!(
-                copy(coefficients), gamma, sim.alive,
-                covariates.births, covariates.deaths;
-                prior_mean=COEFFICIENT_PRIOR_MEAN,
-                prior_sd=COEFFICIENT_PRIOR_SD
+                copy(coefficients), gamma, sim.alive, birth_x, death_x;
+                prior_mean=coefficient_prior_mean,
+                prior_sd=coefficient_prior_sd
             )
             if update.accepted
                 coefficients .= (1 - COEFFICIENT_DAMPING) .* coefficients .+
                                 COEFFICIENT_DAMPING .* update.coefficients
                 pi_time = BGM.shock_probabilities_from_coefficients(
-                    coefficients, covariates.births, covariates.deaths
+                    coefficients, birth_x, death_x
                 )
             end
         end
 
         after, _ = BGM.full_log_posterior(
             state, gamma, pi_time, coefficients;
-            sigmas..., a_delta=A_DELTA, b_delta=B_DELTA,
-            coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
-            coefficient_prior_sd=COEFFICIENT_PRIOR_SD
+            sigmas..., a_delta=A_DELTA, b_delta=B_DELTA, priors...
         )
         iter > 1 && abs(after - before) <= tol * (1 + abs(before)) && break
     end
 
     gamma, logposterior = final_gamma_and_logposterior(
-        state, coefficients, covariates, k, tau_active
+        state, coefficients, sim.alive, k, tau_active;
+        shock_covariates=shock_covariates, priors...
     )
     return (state=state, gamma=gamma, coefficients=coefficients,
             logposterior=logposterior)
@@ -129,14 +158,12 @@ end
 
 function oracle_one(p, k, seed; tau_active, minimum_active)
     sim = simulate_experiment2(p, k, seed; minimum_active=minimum_active)
-    births, deaths = BGM.birth_death_counts(sim.alive)
-    covariates = (births=Float64.(births), deaths=Float64.(deaths))
 
     truth_state = BGM.make_tensor_precision_model(
         [copy(L) for L in sim.Lambda], copy(sim.Delta), sim.Y, sim.alive
     )
     truth_gamma, truth_logposterior = final_gamma_and_logposterior(
-        truth_state, [A0, A_EVENT, A_EVENT], covariates, k, tau_active
+        truth_state, [A0, A_EVENT, A_EVENT], sim.alive, k, tau_active
     )
     truth = evaluate_experiment2(sim, sim.Lambda, sim.Delta, truth_gamma)
 
@@ -197,4 +224,6 @@ function oracle_main()
     io === nothing || close(io)
 end
 
-oracle_main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    oracle_main()
+end

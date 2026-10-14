@@ -81,8 +81,18 @@ end
 nanmean(x) = (v = filter(isfinite, collect(Float64, x)); isempty(v) ? NaN : mean(v))
 ratio(a, b) = b == 0 ? NaN : a / b
 
-"""Simulate one Experiment II trajectory."""
-function simulate_experiment2(p, k, seed; minimum_active)
+"""
+Simulate one Experiment II trajectory. `shock_rule = :network` makes each
+variable's shock probability depend on its partial correlations with the
+variables born and dying at t, with slopes `a_birth` and `a_death`.
+"""
+function simulate_experiment2(
+    p, k, seed;
+    minimum_active,
+    shock_rule=:counts,
+    a_birth=A_EVENT,
+    a_death=A_EVENT
+)
     data_rng = MersenneTwister(seed)
 
     # Lower event probability at p = 50 keeps the number of events per time
@@ -104,12 +114,23 @@ function simulate_experiment2(p, k, seed; minimum_active)
         p, k, T, birth_time, death_time;
         a0=A0, a_event=A_EVENT,
         initial_sd=TAU0 / sqrt(k), change_sd=TAU_CHANGE / sqrt(k),
-        Delta_value=DELTA, rng=data_rng
+        Delta_value=DELTA,
+        shock_rule=shock_rule, a_birth=a_birth, a_death=a_death,
+        rng=data_rng
     )
 end
 
-"""Fit the estimator to a simulated trajectory with the paper's settings."""
-function fit_experiment2(sim, k, seed; tau_active)
+"""
+Fit the estimator to a simulated trajectory with the paper's settings.
+`shock_covariates = :network` fits the network-informed shock probabilities.
+"""
+function fit_experiment2(
+    sim, k, seed;
+    tau_active,
+    shock_covariates=:counts,
+    coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
+    coefficient_prior_sd=COEFFICIENT_PRIOR_SD
+)
     fit_rng = MersenneTwister(10_000 + seed)
     Lambda_init = initialize_loading_paths(sim.alive, k; scale=0.2, rng=fit_rng)
     return EM_time_varying(
@@ -129,8 +150,9 @@ function fit_experiment2(sim, k, seed; tau_active)
         a_birth_init=1.0,
         a_death_init=1.0,
         estimate_shock_coefficients=true,
-        coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
-        coefficient_prior_sd=COEFFICIENT_PRIOR_SD,
+        shock_covariates=shock_covariates,
+        coefficient_prior_mean=coefficient_prior_mean,
+        coefficient_prior_sd=coefficient_prior_sd,
         coefficient_warmup=1,
         coefficient_update_interval=1,
         coefficient_damping=COEFFICIENT_DAMPING,
