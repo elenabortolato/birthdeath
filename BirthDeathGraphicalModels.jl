@@ -129,7 +129,6 @@ function generate_birth_death_data(
     for t in 2:T
         eta = a0 + a_event * event_counts[t]
         pi_time[t] = clamp(inverse_logit(eta), probability_min, probability_max)
-        if t<5  pi_time[t]=0 end
     end
 
     Lambda = [zeros(Float64, p, k) for _ in 1:T]
@@ -144,12 +143,11 @@ function generate_birth_death_data(
                 view(Lambda[t], j, :) .= initial_sd .* randn(rng, k)
                 s_true[j, t] = true
             else
-                view(Lambda[t], j, :) .= initial_sd .* randn(rng, k)
+                # A continuing row keeps its previous value unless a shock occurs.
+                view(Lambda[t], j, :) .= view(Lambda[t - 1], j, :)
                 if rand(rng) < pi_time[t]
-                     
                     view(Lambda[t], j, :) .+= change_sd .* randn(rng, k)
                     s_true[j, t] = true
-                   
                 end
             end
         end
