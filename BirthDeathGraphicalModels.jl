@@ -1577,6 +1577,10 @@ function recursive_binary_split_masked(
     learning_rate::Float64=0.01,
     maxiter::Int=500,
     max_depth::Int=8,
+    a_delta::Float64=1.0,
+    b_delta::Float64=1.0,
+    Lambda_start=nothing,
+    Delta_start=nothing,
     verbose::Bool=true,
     rng::AbstractRNG=Random.default_rng()
 )
@@ -1588,7 +1592,11 @@ function recursive_binary_split_masked(
         Y_segment,
         A_segment,
         k;
+        Lambda_init=Lambda_start,
+        Delta_init=Delta_start,
         prior_var=prior_var,
+        a_delta=a_delta,
+        b_delta=b_delta,
         learning_rate=learning_rate,
         maxiter=maxiter,
         rng=rng
@@ -1626,6 +1634,8 @@ function recursive_binary_split_masked(
         Lambda_init=Lambda_full,
         Delta_init=Delta_full,
         prior_var=prior_var,
+        a_delta=a_delta,
+        b_delta=b_delta,
         learning_rate=learning_rate,
         maxiter=maxiter,
         rng=rng
@@ -1638,6 +1648,8 @@ function recursive_binary_split_masked(
         Lambda_init=Lambda_full,
         Delta_init=Delta_full,
         prior_var=prior_var,
+        a_delta=a_delta,
+        b_delta=b_delta,
         learning_rate=learning_rate,
         maxiter=maxiter,
         rng=rng
@@ -1676,6 +1688,10 @@ function recursive_binary_split_masked(
             learning_rate=learning_rate,
             maxiter=maxiter,
             max_depth=max_depth,
+            a_delta=a_delta,
+            b_delta=b_delta,
+            Lambda_start=Lambda_left,
+            Delta_start=Delta_left,
             verbose=verbose,
             rng=rng
         )
@@ -1692,6 +1708,10 @@ function recursive_binary_split_masked(
             learning_rate=learning_rate,
             maxiter=maxiter,
             max_depth=max_depth,
+            a_delta=a_delta,
+            b_delta=b_delta,
+            Lambda_start=Lambda_right,
+            Delta_start=Delta_right,
             verbose=verbose,
             rng=rng
         )
@@ -1719,6 +1739,10 @@ function detect_changepoints_binary_masked(
     learning_rate::Float64=0.01,
     maxiter::Int=500,
     max_depth::Int=8,
+    a_delta::Float64=1.0,
+    b_delta::Float64=1.0,
+    Lambda_start=nothing,
+    Delta_start=nothing,
     verbose::Bool=true,
     rng::AbstractRNG=Random.default_rng()
 )
@@ -1739,6 +1763,10 @@ function detect_changepoints_binary_masked(
         learning_rate=learning_rate,
         maxiter=maxiter,
         max_depth=max_depth,
+        a_delta=a_delta,
+        b_delta=b_delta,
+        Lambda_start=Lambda_start,
+        Delta_start=Delta_start,
         verbose=verbose,
         rng=rng
     )
@@ -1751,7 +1779,8 @@ function initialization_from_masked_segments(
     alive::AbstractMatrix{Bool},
     k::Int;
     Delta_min::Float64=1e-10,
-    Delta_max::Float64=1e3
+    Delta_max::Float64=1e3,
+    Delta_default::Float64=0.1
 )
     T, p = size(alive)
     isempty(segments) && throw(ArgumentError("segments cannot be empty"))
@@ -1793,7 +1822,7 @@ function initialization_from_masked_segments(
         end
     end
 
-    Delta_init = fill(0.1, p)
+    Delta_init = fill(Delta_default, p)
     for j in 1:p
         if Delta_weight[j] > 0
             Delta_init[j] = clamp(
@@ -1948,6 +1977,22 @@ function _EM_time_varying_core(
 
     if changepoint_init
         verbose && println("Running mask-aware binary-splitting initialization")
+
+        # Start the splitting from the supplied initial values: each variable's
+        # Lambda_init row at its first active time, and Delta_init_value. The
+        # segment fits then refine them under the model's Gamma(a_delta, b_delta)
+        # prior.
+        Lambda_start = zeros(Float64, p, k)
+        for j in 1:p
+            first_t = findfirst(view(alive, :, j))
+            isnothing(first_t) && continue
+            view(Lambda_start, j, :) .= view(Lambda_init[first_t], j, :)
+        end
+        # Lambda = 0 is a stationary point of the segment objective, so an
+        # all-zero start would never move; fall back to the random start.
+        all(iszero, Lambda_start) && (Lambda_start = nothing)
+        Delta_start = fill(Float64(Delta_init_value), p)
+
         segments = detect_changepoints_binary_masked(
             Y,
             alive,
@@ -1958,10 +2003,19 @@ function _EM_time_varying_core(
             learning_rate=changepoint_learning_rate,
             maxiter=changepoint_maxiter,
             max_depth=changepoint_max_depth,
+            a_delta=a_delta,
+            b_delta=b_delta,
+            Lambda_start=Lambda_start,
+            Delta_start=Delta_start,
             verbose=verbose,
             rng=rng
         )
-        Lambda, Delta = initialization_from_masked_segments(segments, alive, k)
+        Lambda, Delta = initialization_from_masked_segments(
+            segments,
+            alive,
+            k;
+            Delta_default=Float64(Delta_init_value)
+        )
     end
 
     if verbose
