@@ -99,6 +99,29 @@ are computed on the full time-varying active sets.
 - Shock detection is close to chance in all three settings. Neither keeping
   p_t > k nor matching τ_a to the true shock scale improves it.
 
+### Oracle check: why shock detection is poor
+
+`oracle_check.jl` compares the default fit with generalized EM started from the
+true parameters ("oracle"). The design is p = 10, τ_a = 1.5 (the true shock
+scale) and `minimum_active = 6`, with 20 trajectories per rank. The CSVs are
+`results/experiment2/oracle_p10_k*_tau150_min6.csv`.
+
+| | k = 5 | k = 2 |
+|---|---|---|
+| shock AUROC, oracle / default | 0.99 / 0.60 | 0.94 / 0.59 |
+| shock recall, oracle / default | 0.98 / 0.07 | 0.87 / 0.10 |
+| off-diagonal RV, oracle / default | 0.86 / 0.70 | 0.94 / 0.78 |
+| oracle reaches a higher log posterior than default | 7 of 20 | 17 of 20 |
+
+- Started from the truth, the EM stays there: the data separate shocks from
+  non-shocks.
+- With k = 2 the decomposition is identified for every p_t ≥ 5. There the
+  default fit usually lands in a worse mode than the oracle, so the
+  initialization and optimization are what lose the shocks.
+- With k = 5 and p_t between 6 and 8 the decomposition is not identified, and
+  the default fit usually reaches a higher log posterior than the oracle. The
+  posterior's best mode is then not near the true shocks.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
