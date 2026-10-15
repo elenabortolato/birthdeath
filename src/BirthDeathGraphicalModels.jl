@@ -2868,8 +2868,8 @@ falls below `tol` or `n_polish` iterations.
 
 With `temper_spike = true` the inactive (spike) scale is tempered too: a
 replica at temperature beta uses an inactive scale that grows geometrically in
-log beta from `sigma_inactive` at beta = 1 to `sigma_inactive_hot` (default
-`sigma_active`) at the lowest beta, so at high temperature a zero loading
+log beta from `sigma_inactive` at beta = 1 to `sigma_inactive_hot` (NaN, the
+default, means `sigma_active`) at the lowest beta, so at high temperature a zero loading
 change no longer has a large prior-density advantage. Scoring and the final
 refinement use the untempered model.
 
@@ -2889,7 +2889,7 @@ function parallel_tempered_EM(
     swap_interval::Int=5,
     exchange::Symbol=:metropolis,
     temper_spike::Bool=false,
-    sigma_inactive_hot::Float64=sigma_active,
+    sigma_inactive_hot::Float64=NaN,
     n_tempered::Int=200,
     n_polish::Int=500,
     tol::Float64=1e-6,
@@ -2935,10 +2935,11 @@ function parallel_tempered_EM(
     # geometrically in log beta: sigma_inactive at beta = 1, sigma_inactive_hot
     # at the lowest beta.
     beta_min = minimum(betas)
+    spike_hot = isnan(sigma_inactive_hot) ? sigma_active : sigma_inactive_hot
     spike_scale(beta) =
         !temper_spike || beta >= 1 || beta_min >= 1 ? sigma_inactive :
         exp(log(sigma_inactive) +
-            log(beta) / log(beta_min) * (log(sigma_inactive_hot) - log(sigma_inactive)))
+            log(beta) / log(beta_min) * (log(spike_hot) - log(sigma_inactive)))
 
     n = length(replicas)
     # at_level[i] is the replica currently at temperature betas[i].
