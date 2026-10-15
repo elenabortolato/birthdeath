@@ -11,6 +11,7 @@ export TensorPrecisionModel,
        generate_birth_death_data,
        initialize_loading_paths,
        EM_time_varying,
+       MCMC_time_varying,
        active_precision,
        active_precision_errors,
        compare_active_precision_matrices,
@@ -2737,6 +2738,289 @@ function EM_time_varying(
             Δmean_history=result.Delta_mean_history,
             σ_inactive_history=result.sigma_inactive_history,
             π_time_history=result.pi_time_history
+        )
+    )
+end
+
+# ============================================================================
+# MCMC
+# ============================================================================
+
+"""Gaussian log likelihood of one time point, by the determinant lemma."""
+function time_loglikelihood(
+    Lambda_obs::AbstractMatrix,
+    Delta_obs::AbstractVector,
+    y_obs::AbstractVector
+)
+    k = size(Lambda_obs, 2)
+    DinvLambda = Lambda_obs ./ Delta_obs
+    P = Symmetric(Matrix{Float64}(I, k, k) + Lambda_obs' * DinvLambda)
+    C = cholesky(P; check=false)
+    issuccess(C) || return -Inf
+    logdet_Omega = sum(log, Delta_obs) + 2.0 * sum(log, diag(C.U))
+    Lty = Lambda_obs' * y_obs
+    quad = dot(Delta_obs .* y_obs, y_obs) + dot(Lty, Lty)
+    return 0.5 * (logdet_Omega - quad - length(y_obs) * log(2pi))
+end
+
+"""
+Change in the log likelihood when row j of the loadings moves by `increment`
+over the active spell starting at s. Returns the change and the new per-time
+log likelihoods.
+"""
+function row_increment_loglik_change(state, s, j, increment)
+    last_t = active_spell_end(state.alive, s, j)
+    new_values = Vector{Float64}(undef, last_t - s + 1)
+    change = 0.0
+    for (i, t) in enumerate(s:last_t)
+        idx = state.obs_idx[t]
+        Lambda_obs = state.Lambda[t][idx, :]
+        view(Lambda_obs, state.local_pos[t, j], :) .+= increment
+        new_values[i] = time_loglikelihood(
+            Lambda_obs, state.Delta[idx], view(state.y, t, idx)
+        )
+        change += new_values[i] - state.logliks[t]
+    end
+    return change, new_values
+end
+
+function apply_row_increment!(state, s, j, increment, new_values)
+    last_t = active_spell_end(state.alive, s, j)
+    view(state.DiffLambda[s], j, :) .+= increment
+    for (i, t) in enumerate(s:last_t)
+        view(state.Lambda[t], j, :) .+= increment
+        state.logliks[t] = new_values[i]
+    end
+    return state
+end
+
+gaussian_row_logdensity(d, sigma) =
+    -length(d) * log(sigma) - sum(abs2, d) / (2 * sigma^2)
+
+"""
+Metropolis-within-Gibbs sampler for the birth-death factor model.
+
+The target is the posterior of the model fitted by `EM_time_varying`: rowwise
+loading changes D with a birth prior N(0, sigma_initial^2 I) and a two-component
+continuation prior with indicators z, Gamma(a_delta, b_delta) priors on Delta,
+and logistic shock probabilities with Gaussian priors on the coefficients.
+Shock probabilities use the birth and death counts at each time.
+
+Each sweep updates, for every active (t, j):
+- z_jt from its exact conditional given D_jt (continuations);
+- D_jt by a Gaussian random walk, scaled to the current component;
+- (z_jt, D_jt) jointly by a flip move that switches the component and draws a
+  new D_jt from that component's prior; the prior then cancels and the
+  acceptance ratio is the likelihood ratio times the prior odds of z.
+Then each Delta_j by a random walk on log Delta_j, and the coefficients by a
+Gaussian random walk. Random-walk scales adapt during burn-in only.
+
+Returns posterior means of the shock indicators (`gamma`, with births set to 1
+as in `EM_time_varying`), of the active precision matrices (`Omega_mean`,
+full p x p per time, meaningful on the active set), of Delta and of the
+coefficients, plus acceptance rates.
+"""
+function MCMC_time_varying(
+    Y::Matrix{Float64},
+    alive_input::AbstractMatrix{Bool},
+    k::Int;
+    Lambda_init::Vector{Matrix{Float64}},
+    Delta_init::Vector{Float64},
+    coefficients_init::Vector{Float64}=[-2.0, 0.0, 0.0],
+    sigma_initial::Float64=1.0,
+    sigma_active::Float64=1.0,
+    sigma_inactive::Float64=0.01,
+    a_delta::Float64=1.0,
+    b_delta::Float64=1.0,
+    coefficient_prior_mean::Vector{Float64}=[0.0, 0.0, 0.0],
+    coefficient_prior_sd::Vector{Float64}=[2.0, 2.0, 2.0],
+    n_burnin::Int=1000,
+    n_samples::Int=2000,
+    rng::AbstractRNG=Random.default_rng()
+)
+    alive = BitMatrix(alive_input)
+    T, p = size(Y)
+    state = make_tensor_precision_model(Lambda_init, Delta_init, Y, alive)
+
+    births, deaths = birth_death_counts(alive)
+    birth_x = Float64.(births)
+    death_x = Float64.(deaths)
+    coefficients = copy(coefficients_init)
+    pi_time = shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
+
+    continuations = [
+        (t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)
+    ]
+    rows = [(t, j) for t in 1:T for j in 1:p if alive[t, j]]
+    sigma_of(z) = z ? sigma_active : sigma_inactive
+
+    # Start each indicator at its more probable state given the initial D.
+    z = falses(p, T)
+    for (t, j) in continuations
+        d = view(state.DiffLambda[t], j, :)
+        z[j, t] = log(pi_time[t]) + gaussian_row_logdensity(d, sigma_active) >
+                  log1p(-pi_time[t]) + gaussian_row_logdensity(d, sigma_inactive)
+    end
+
+    # Adaptive random-walk scales, as multiples of the prior scales.
+    rw_scale = Dict(:birth => 0.5, :active => 0.5, :inactive => 0.5)
+    rw_accept = Dict(key => 0 for key in keys(rw_scale))
+    rw_tries = Dict(key => 0 for key in keys(rw_scale))
+    delta_scale = 0.3
+    delta_accept = 0
+    delta_tries = 0
+    coefficient_scale = 0.2
+    coefficient_accept = 0
+    coefficient_tries = 0
+    flip_accept = 0
+    flip_tries = 0
+
+    z_sum = zeros(Float64, p, T)
+    Omega_sum = [zeros(Float64, p, p) for _ in 1:T]
+    Delta_sum = zeros(Float64, p)
+    coefficient_sum = zeros(Float64, 3)
+
+    function coefficient_logtarget(a)
+        value = 0.0
+        pis = shock_probabilities_from_coefficients(a, birth_x, death_x)
+        for (t, j) in continuations
+            value += z[j, t] ? log(pis[t]) : log1p(-pis[t])
+        end
+        return value - sum(abs2, (a .- coefficient_prior_mean) ./ coefficient_prior_sd) / 2
+    end
+
+    for sweep in 1:(n_burnin + n_samples)
+        burning = sweep <= n_burnin
+
+        for (t, j) in rows
+            d = Vector(view(state.DiffLambda[t], j, :))
+
+            if is_birth(alive, t, j)
+                kind = :birth
+                sigma = sigma_initial
+            else
+                # Exact conditional of the indicator given D.
+                log_active = log(pi_time[t]) + gaussian_row_logdensity(d, sigma_active)
+                log_inactive = log1p(-pi_time[t]) + gaussian_row_logdensity(d, sigma_inactive)
+                probability = exp(log_active - logsumexp2(log_active, log_inactive))
+                z[j, t] = rand(rng) < probability
+
+                # Flip move: switch component, draw D from its prior.
+                proposed_z = !z[j, t]
+                proposed_d = sigma_of(proposed_z) .* randn(rng, k)
+                change, new_values = row_increment_loglik_change(
+                    state, t, j, proposed_d .- d
+                )
+                log_ratio = change + (proposed_z ?
+                    log(pi_time[t]) - log1p(-pi_time[t]) :
+                    log1p(-pi_time[t]) - log(pi_time[t]))
+                flip_tries += 1
+                if log(rand(rng)) < log_ratio
+                    apply_row_increment!(state, t, j, proposed_d .- d, new_values)
+                    z[j, t] = proposed_z
+                    d = proposed_d
+                    flip_accept += 1
+                end
+
+                kind = z[j, t] ? :active : :inactive
+                sigma = sigma_of(z[j, t])
+            end
+
+            # Random walk within the current component.
+            step = rw_scale[kind] * sigma .* randn(rng, k)
+            change, new_values = row_increment_loglik_change(state, t, j, step)
+            log_ratio = change +
+                gaussian_row_logdensity(d .+ step, sigma) -
+                gaussian_row_logdensity(d, sigma)
+            rw_tries[kind] += 1
+            if log(rand(rng)) < log_ratio
+                apply_row_increment!(state, t, j, step, new_values)
+                rw_accept[kind] += 1
+            end
+        end
+
+        # Diagonal precisions: random walk on log Delta_j.
+        for j in 1:p
+            times = [t for t in 1:T if alive[t, j]]
+            isempty(times) && continue
+            old = state.Delta[j]
+            proposal = old * exp(delta_scale * randn(rng))
+            state.Delta[j] = proposal
+            new_values = [
+                time_loglikelihood(
+                    state.Lambda[t][state.obs_idx[t], :],
+                    state.Delta[state.obs_idx[t]],
+                    view(state.y, t, state.obs_idx[t])
+                ) for t in times
+            ]
+            state.Delta[j] = old
+            change = sum(new_values) - sum(state.logliks[times])
+            # Gamma prior on Delta plus the Jacobian of the log scale.
+            log_ratio = change +
+                a_delta * (log(proposal) - log(old)) - b_delta * (proposal - old)
+            delta_tries += 1
+            if log(rand(rng)) < log_ratio
+                state.Delta[j] = proposal
+                state.logliks[times] .= new_values
+                delta_accept += 1
+            end
+        end
+
+        # Shock-probability coefficients.
+        proposal = coefficients .+ coefficient_scale .* randn(rng, 3)
+        coefficient_tries += 1
+        if log(rand(rng)) < coefficient_logtarget(proposal) - coefficient_logtarget(coefficients)
+            coefficients .= proposal
+            pi_time = shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
+            coefficient_accept += 1
+        end
+
+        if burning && sweep % 50 == 0
+            # Aim for acceptance rates near 0.3 during burn-in.
+            for key in keys(rw_scale)
+                rw_tries[key] > 0 || continue
+                rate = rw_accept[key] / rw_tries[key]
+                rw_scale[key] *= exp(rate - 0.3)
+                rw_accept[key] = 0
+                rw_tries[key] = 0
+            end
+            delta_scale *= exp(delta_accept / max(delta_tries, 1) - 0.3)
+            coefficient_scale *= exp(coefficient_accept / max(coefficient_tries, 1) - 0.3)
+            delta_accept = delta_tries = coefficient_accept = coefficient_tries = 0
+            flip_accept = flip_tries = 0
+        end
+
+        if !burning
+            z_sum .+= z
+            for t in 1:T
+                idx = state.obs_idx[t]
+                isempty(idx) && continue
+                L = state.Lambda[t][idx, :]
+                Omega_sum[t][idx, idx] .+= L * L' + Diagonal(state.Delta[idx])
+            end
+            Delta_sum .+= state.Delta
+            coefficient_sum .+= coefficients
+        end
+    end
+
+    gamma = z_sum ./ n_samples
+    for t in 1:T, j in 1:p
+        is_birth(alive, t, j) && (gamma[j, t] = 1.0)
+    end
+    refresh_all_caches!(state)
+
+    return (
+        gamma=gamma,
+        Omega_mean=[O ./ n_samples for O in Omega_sum],
+        Delta_mean=Delta_sum ./ n_samples,
+        coefficient_mean=coefficient_sum ./ n_samples,
+        state=state,
+        acceptance=(
+            flip=flip_accept / max(flip_tries, 1),
+            random_walk=Dict(key => rw_accept[key] / max(rw_tries[key], 1)
+                             for key in keys(rw_accept)),
+            delta=delta_accept / max(delta_tries, 1),
+            coefficients=coefficient_accept / max(coefficient_tries, 1)
         )
     )
 end
