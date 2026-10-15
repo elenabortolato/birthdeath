@@ -255,6 +255,28 @@ All 20 trajectories finished; the CSV is
 
 Exchange rates were 0.05–0.25; the best solution always came from beta = 1.
 
+With forced exchanges, `exchange = :always`, every proposed exchange is
+made (exchange rate 1). Twelve trajectories finished, in
+`results/experiment2/tempered_em_always_p10_k2_tau150_min6.csv`. The results
+are close to the rank rule's: AUROC up in some trajectories and down in
+others, recall equal or lower, and RV unchanged (0.828 → 0.826 over the
+first 11).
+
+With forced exchanges and a tempered spike (`TEMPERED_EM_SPIKE=1`), the
+inactive scale also widens with temperature, up to the active scale at the
+lowest beta. Three trajectories finished, in
+`results/experiment2/tempered_em_always_spike_p10_k2_tau150_min6.csv`.
+
+| seed | log-posterior gain | recall, EM → tempered | off-diagonal RV, EM → tempered |
+|---|---|---|---|
+| 1 | +198 | 0.10 → 0.00 | 0.776 → 0.818 |
+| 2 | +147 | 0.06 → 0.00 | 0.622 → 0.696 |
+| 3 | +138 | 0.04 → 0.00 | 0.748 → 0.801 |
+
+The tempered spike reaches much higher modes, in which every shock
+probability is near zero: no loading changes are detected at all, while
+off-diagonal RV improves by about 0.05.
+
 Tempered EM reaches a higher log posterior in every trajectory, without
 clearly improving detection. With greedy exchanges no exchange is ever accepted, so
 the replicas reduce to independent EM runs at different temperatures, and the

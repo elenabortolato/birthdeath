@@ -1,0 +1,7 @@
+p,k,seed,tau_active,minimum_active,exchange,temper_spike,method,auroc,recall,precision,gamma_true_shocks,gamma_non_shocks,rv,offdiag_rv,logposterior,chosen_beta,swap_acceptance_min,replicas_visiting_beta_one
+10,2,1,1.5,6,always,true,em,0.528014,0.0967742,0.09375,0.0970057,0.0956422,0.85021,0.776026,476.626,NaN,NaN,0
+10,2,1,1.5,6,always,true,tempered_em,0.452674,0,NaN,1.21127e-05,1.13805e-05,0.877048,0.818145,674.289,1,1,9
+10,2,2,1.5,6,always,true,em,0.601203,0.0645161,0.0909091,0.0647366,0.0679699,0.746098,0.621505,539.532,NaN,NaN,0
+10,2,2,1.5,6,always,true,tempered_em,0.716457,0,NaN,1.4511e-05,1.12492e-05,0.801748,0.696311,686.727,1,1,9
+10,2,3,1.5,6,always,true,em,0.529535,0.0416667,0.0555556,0.0418077,0.0519658,0.825895,0.747905,615.419,NaN,NaN,0
+10,2,3,1.5,6,always,true,tempered_em,0.554878,0,NaN,1.16236e-05,1.06664e-05,0.826148,0.80093,753.583,1,1,9
