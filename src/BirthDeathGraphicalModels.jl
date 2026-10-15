@@ -2845,9 +2845,12 @@ Parallel-tempered (replica-exchange) generalized EM.
 One replica per likelihood temperature in `betas` runs generalized EM on the
 tempered objective beta * loglik + log prior, all starting from the same
 values (typically an `EM_time_varying` fit). Every `swap_interval`
-iterations, neighbouring replicas propose to exchange states, accepted with
-probability min(1, exp((beta_i - beta_j) (loglik_j - loglik_i))), as in
-parallel tempering. Low-temperature replicas move between shock
+iterations, neighbouring replicas propose to exchange states. With
+`exchange = :metropolis` (default) the exchange is accepted with probability
+min(1, exp((beta_i - beta_j) (loglik_j - loglik_i))), as in parallel
+tempering. With `:greedy` it is accepted exactly when that ratio exceeds 1,
+that is when it increases the sum of the replicas' tempered log likelihoods;
+with `:always` every proposed exchange is made. Low-temperature replicas move between shock
 configurations more easily, and exchanges carry their states towards
 beta = 1. After `n_tempered` iterations, the replica state with the highest
 untempered log posterior is kept and refined by untempered generalized EM
@@ -2865,6 +2868,7 @@ function parallel_tempered_EM(
     coefficients_init::Vector{Float64},
     betas::Vector{Float64}=collect(0.2 .^ ((0:8) ./ 8)),
     swap_interval::Int=5,
+    exchange::Symbol=:metropolis,
     n_tempered::Int=200,
     n_polish::Int=500,
     tol::Float64=1e-6,
@@ -2878,6 +2882,8 @@ function parallel_tempered_EM(
     coefficient_damping::Float64=0.05,
     rng::AbstractRNG=Random.default_rng()
 )
+    exchange in (:metropolis, :greedy, :always) ||
+        throw(ArgumentError("exchange must be :metropolis, :greedy or :always"))
     alive = BitMatrix(alive_input)
     births, deaths = birth_death_counts(alive)
     birth_x = Float64.(births)
@@ -2915,7 +2921,9 @@ function parallel_tempered_EM(
                 log_ratio = (a.beta - b.beta) *
                     (sum(b.state.logliks) - sum(a.state.logliks))
                 swap_tries[i] += 1
-                if log(rand(rng)) < log_ratio
+                accept = exchange == :metropolis ? log(rand(rng)) < log_ratio :
+                         exchange == :greedy ? log_ratio > 0 : true
+                if accept
                     a.state, b.state = b.state, a.state
                     a.coefficients, b.coefficients = b.coefficients, a.coefficients
                     a.pi_time, b.pi_time = b.pi_time, a.pi_time
