@@ -153,4 +153,6 @@ function mcmc_main()
     io === nothing || close(io)
 end
 
-mcmc_main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    mcmc_main()
+end

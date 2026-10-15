@@ -12,6 +12,7 @@ export TensorPrecisionModel,
        initialize_loading_paths,
        EM_time_varying,
        MCMC_time_varying,
+       parallel_tempering_time_varying,
        active_precision,
        active_precision_errors,
        compare_active_precision_matrices,
@@ -2797,36 +2798,243 @@ end
 gaussian_row_logdensity(d, sigma) =
     -length(d) * log(sigma) - sum(abs2, d) / (2 * sigma^2)
 
+"""Settings shared by all chains of a sampler run."""
+struct MCMCSettings
+    sigma_initial::Float64
+    sigma_active::Float64
+    sigma_inactive::Float64
+    a_delta::Float64
+    b_delta::Float64
+    coefficient_prior_mean::Vector{Float64}
+    coefficient_prior_sd::Vector{Float64}
+    birth_x::Vector{Float64}
+    death_x::Vector{Float64}
+    rows::Vector{Tuple{Int, Int}}
+    continuations::Vector{Tuple{Int, Int}}
+end
+
 """
-Metropolis-within-Gibbs sampler for the birth-death factor model.
-
-The target is the posterior of the model fitted by `EM_time_varying`: rowwise
-loading changes D with a birth prior N(0, sigma_initial^2 I) and a two-component
-continuation prior with indicators z, Gamma(a_delta, b_delta) priors on Delta,
-and logistic shock probabilities with Gaussian priors on the coefficients.
-Shock probabilities use the birth and death counts at each time.
-
-Each sweep updates, for every active (t, j):
-- z_jt from its exact conditional given D_jt (continuations);
-- D_jt by a Gaussian random walk, scaled to the current component;
-- (z_jt, D_jt) jointly by a flip move that switches the component and draws a
-  new D_jt from that component's prior; the prior then cancels and the
-  acceptance ratio is the likelihood ratio times the prior odds of z.
-Then each Delta_j by a random walk on log Delta_j, and the coefficients by a
-Gaussian random walk. Random-walk scales adapt during burn-in only.
-
-Returns posterior means of the shock indicators (`gamma`, with births set to 1
-as in `EM_time_varying`), of the active precision matrices (`Omega_mean`,
-full p x p per time, meaningful on the active set), of Delta and of the
-coefficients, plus acceptance rates.
+One Markov chain. `beta` is its likelihood temperature: the chain targets
+p(y | theta)^beta p(theta), and beta = 1 is the posterior.
 """
-function MCMC_time_varying(
+mutable struct TemperedChain
+    beta::Float64
+    state::TensorPrecisionModel
+    z::BitMatrix
+    coefficients::Vector{Float64}
+    pi_time::Vector{Float64}
+    rw_scale::Dict{Symbol, Float64}
+    rw_accept::Dict{Symbol, Int}
+    rw_tries::Dict{Symbol, Int}
+    delta_scale::Float64
+    delta_accept::Int
+    delta_tries::Int
+    coefficient_scale::Float64
+    coefficient_accept::Int
+    coefficient_tries::Int
+    flip_accept::Int
+    flip_tries::Int
+end
+
+function make_tempered_chain(beta, Lambda_init, Delta_init, coefficients_init, Y, alive, settings)
+    state = make_tensor_precision_model(
+        [copy(L) for L in Lambda_init], copy(Delta_init), Y, alive
+    )
+    coefficients = copy(coefficients_init)
+    pi_time = shock_probabilities_from_coefficients(
+        coefficients, settings.birth_x, settings.death_x
+    )
+
+    # Start each indicator at its more probable state given the initial D.
+    T, p = size(alive)
+    z = falses(p, T)
+    for (t, j) in settings.continuations
+        d = view(state.DiffLambda[t], j, :)
+        z[j, t] = log(pi_time[t]) + gaussian_row_logdensity(d, settings.sigma_active) >
+                  log1p(-pi_time[t]) + gaussian_row_logdensity(d, settings.sigma_inactive)
+    end
+
+    kinds = (:birth, :active, :inactive)
+    return TemperedChain(
+        beta, state, z, coefficients, pi_time,
+        Dict(key => 0.5 for key in kinds),
+        Dict(key => 0 for key in kinds),
+        Dict(key => 0 for key in kinds),
+        0.3, 0, 0, 0.2, 0, 0, 0, 0
+    )
+end
+
+function coefficient_logtarget(chain, settings, a)
+    pis = shock_probabilities_from_coefficients(a, settings.birth_x, settings.death_x)
+    value = 0.0
+    for (t, j) in settings.continuations
+        value += chain.z[j, t] ? log(pis[t]) : log1p(-pis[t])
+    end
+    return value -
+        sum(abs2, (a .- settings.coefficient_prior_mean) ./ settings.coefficient_prior_sd) / 2
+end
+
+"""One Metropolis-within-Gibbs sweep at the chain's temperature."""
+function mcmc_sweep!(chain::TemperedChain, settings::MCMCSettings, rng::AbstractRNG)
+    state = chain.state
+    alive = state.alive
+    T, p = size(alive)
+    k = size(state.Lambda[1], 2)
+    beta = chain.beta
+    sigma_of(z) = z ? settings.sigma_active : settings.sigma_inactive
+
+    for (t, j) in settings.rows
+        d = Vector(view(state.DiffLambda[t], j, :))
+
+        if is_birth(alive, t, j)
+            kind = :birth
+            sigma = settings.sigma_initial
+        else
+            pi_t = chain.pi_time[t]
+            # Exact conditional of the indicator given D.
+            log_active = log(pi_t) + gaussian_row_logdensity(d, settings.sigma_active)
+            log_inactive = log1p(-pi_t) + gaussian_row_logdensity(d, settings.sigma_inactive)
+            probability = exp(log_active - logsumexp2(log_active, log_inactive))
+            chain.z[j, t] = rand(rng) < probability
+
+            # Flip move: switch component, draw D from its prior.
+            proposed_z = !chain.z[j, t]
+            proposed_d = sigma_of(proposed_z) .* randn(rng, k)
+            change, new_values = row_increment_loglik_change(state, t, j, proposed_d .- d)
+            log_ratio = beta * change + (proposed_z ?
+                log(pi_t) - log1p(-pi_t) :
+                log1p(-pi_t) - log(pi_t))
+            chain.flip_tries += 1
+            if log(rand(rng)) < log_ratio
+                apply_row_increment!(state, t, j, proposed_d .- d, new_values)
+                chain.z[j, t] = proposed_z
+                d = proposed_d
+                chain.flip_accept += 1
+            end
+
+            kind = chain.z[j, t] ? :active : :inactive
+            sigma = sigma_of(chain.z[j, t])
+        end
+
+        # Random walk within the current component.
+        step = chain.rw_scale[kind] * sigma .* randn(rng, k)
+        change, new_values = row_increment_loglik_change(state, t, j, step)
+        log_ratio = beta * change +
+            gaussian_row_logdensity(d .+ step, sigma) -
+            gaussian_row_logdensity(d, sigma)
+        chain.rw_tries[kind] += 1
+        if log(rand(rng)) < log_ratio
+            apply_row_increment!(state, t, j, step, new_values)
+            chain.rw_accept[kind] += 1
+        end
+    end
+
+    # Diagonal precisions: random walk on log Delta_j.
+    for j in 1:p
+        times = [t for t in 1:T if alive[t, j]]
+        isempty(times) && continue
+        old = state.Delta[j]
+        proposal = old * exp(chain.delta_scale * randn(rng))
+        state.Delta[j] = proposal
+        new_values = [
+            time_loglikelihood(
+                state.Lambda[t][state.obs_idx[t], :],
+                state.Delta[state.obs_idx[t]],
+                view(state.y, t, state.obs_idx[t])
+            ) for t in times
+        ]
+        state.Delta[j] = old
+        change = sum(new_values) - sum(state.logliks[times])
+        # Gamma prior on Delta plus the Jacobian of the log scale.
+        log_ratio = beta * change +
+            settings.a_delta * (log(proposal) - log(old)) -
+            settings.b_delta * (proposal - old)
+        chain.delta_tries += 1
+        if log(rand(rng)) < log_ratio
+            state.Delta[j] = proposal
+            state.logliks[times] .= new_values
+            chain.delta_accept += 1
+        end
+    end
+
+    # Shock-probability coefficients; their conditional has no likelihood term.
+    proposal = chain.coefficients .+ chain.coefficient_scale .* randn(rng, 3)
+    chain.coefficient_tries += 1
+    if log(rand(rng)) <
+       coefficient_logtarget(chain, settings, proposal) -
+       coefficient_logtarget(chain, settings, chain.coefficients)
+        chain.coefficients .= proposal
+        chain.pi_time = shock_probabilities_from_coefficients(
+            chain.coefficients, settings.birth_x, settings.death_x
+        )
+        chain.coefficient_accept += 1
+    end
+    return chain
+end
+
+"""Adapt random-walk scales towards acceptance rates near 0.3 (burn-in only)."""
+function adapt_chain!(chain::TemperedChain)
+    for key in keys(chain.rw_scale)
+        chain.rw_tries[key] > 0 || continue
+        rate = chain.rw_accept[key] / chain.rw_tries[key]
+        chain.rw_scale[key] *= exp(rate - 0.3)
+        chain.rw_accept[key] = 0
+        chain.rw_tries[key] = 0
+    end
+    chain.delta_scale *= exp(chain.delta_accept / max(chain.delta_tries, 1) - 0.3)
+    chain.coefficient_scale *=
+        exp(chain.coefficient_accept / max(chain.coefficient_tries, 1) - 0.3)
+    chain.delta_accept = chain.delta_tries = 0
+    chain.coefficient_accept = chain.coefficient_tries = 0
+    chain.flip_accept = chain.flip_tries = 0
+    return chain
+end
+
+"""Exchange the model states of two chains; temperatures and scales stay."""
+function swap_chain_states!(a::TemperedChain, b::TemperedChain)
+    a.state, b.state = b.state, a.state
+    a.z, b.z = b.z, a.z
+    a.coefficients, b.coefficients = b.coefficients, a.coefficients
+    a.pi_time, b.pi_time = b.pi_time, a.pi_time
+    return nothing
+end
+
+"""
+Parallel-tempering sampler for the birth-death factor model.
+
+Runs one chain per likelihood temperature in `betas` (default: nine
+temperatures, geometric from 1 to 0.2; neighbouring temperatures must be close
+enough for exchanges to be accepted, and a ladder of 1, 0.6, 0.35, 0.2 gave
+exchange rates near zero in Experiment II); the chain at
+`betas[1]` (normally 1.0) samples the posterior targeted by `EM_time_varying`
+with counts-based shock probabilities. Each sweep updates every chain with
+`mcmc_sweep!`, then proposes exchanges between neighbouring temperatures,
+alternating even and odd pairs, accepted with probability
+min(1, exp((beta_i - beta_j) (loglik_j - loglik_i))). Hotter chains move
+between shock configurations more easily, and the exchanges carry those moves
+to the posterior chain.
+
+The sweep updates, for every active (t, j): z_jt from its exact conditional
+given D_jt (continuations); (z_jt, D_jt) by a flip move that switches the
+component and draws D_jt from that component's prior, so the acceptance ratio
+is the tempered likelihood ratio times the prior odds of z; and D_jt by a
+Gaussian random walk scaled to the current component. Then each Delta_j by a
+random walk on log Delta_j, and the coefficients by a Gaussian random walk.
+Random-walk scales adapt during burn-in only.
+
+Returns posterior means from the first chain (`gamma`, with births set to 1
+as in `EM_time_varying`; `Omega_mean`, full p x p per time and meaningful on
+the active set; `Delta_mean`; `coefficient_mean`), the mean shock indicators
+at every temperature (`gamma_by_beta`), acceptance rates and exchange rates.
+"""
+function parallel_tempering_time_varying(
     Y::Matrix{Float64},
     alive_input::AbstractMatrix{Bool},
     k::Int;
     Lambda_init::Vector{Matrix{Float64}},
     Delta_init::Vector{Float64},
     coefficients_init::Vector{Float64}=[-2.0, 0.0, 0.0],
+    betas::Vector{Float64}=collect(0.2 .^ ((0:8) ./ 8)),
     sigma_initial::Float64=1.0,
     sigma_active::Float64=1.0,
     sigma_inactive::Float64=0.01,
@@ -2840,190 +3048,97 @@ function MCMC_time_varying(
 )
     alive = BitMatrix(alive_input)
     T, p = size(Y)
-    state = make_tensor_precision_model(Lambda_init, Delta_init, Y, alive)
-
     births, deaths = birth_death_counts(alive)
-    birth_x = Float64.(births)
-    death_x = Float64.(deaths)
-    coefficients = copy(coefficients_init)
-    pi_time = shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
-
-    continuations = [
-        (t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)
+    settings = MCMCSettings(
+        sigma_initial, sigma_active, sigma_inactive, a_delta, b_delta,
+        coefficient_prior_mean, coefficient_prior_sd,
+        Float64.(births), Float64.(deaths),
+        [(t, j) for t in 1:T for j in 1:p if alive[t, j]],
+        [(t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)]
+    )
+    chains = [
+        make_tempered_chain(beta, Lambda_init, Delta_init, coefficients_init, Y, alive, settings)
+        for beta in betas
     ]
-    rows = [(t, j) for t in 1:T for j in 1:p if alive[t, j]]
-    sigma_of(z) = z ? sigma_active : sigma_inactive
+    n_chains = length(chains)
+    swap_accept = zeros(Int, max(n_chains - 1, 0))
+    swap_tries = zeros(Int, max(n_chains - 1, 0))
 
-    # Start each indicator at its more probable state given the initial D.
-    z = falses(p, T)
-    for (t, j) in continuations
-        d = view(state.DiffLambda[t], j, :)
-        z[j, t] = log(pi_time[t]) + gaussian_row_logdensity(d, sigma_active) >
-                  log1p(-pi_time[t]) + gaussian_row_logdensity(d, sigma_inactive)
-    end
-
-    # Adaptive random-walk scales, as multiples of the prior scales.
-    rw_scale = Dict(:birth => 0.5, :active => 0.5, :inactive => 0.5)
-    rw_accept = Dict(key => 0 for key in keys(rw_scale))
-    rw_tries = Dict(key => 0 for key in keys(rw_scale))
-    delta_scale = 0.3
-    delta_accept = 0
-    delta_tries = 0
-    coefficient_scale = 0.2
-    coefficient_accept = 0
-    coefficient_tries = 0
-    flip_accept = 0
-    flip_tries = 0
-
-    z_sum = zeros(Float64, p, T)
+    z_sums = [zeros(Float64, p, T) for _ in 1:n_chains]
     Omega_sum = [zeros(Float64, p, p) for _ in 1:T]
     Delta_sum = zeros(Float64, p)
     coefficient_sum = zeros(Float64, 3)
 
-    function coefficient_logtarget(a)
-        value = 0.0
-        pis = shock_probabilities_from_coefficients(a, birth_x, death_x)
-        for (t, j) in continuations
-            value += z[j, t] ? log(pis[t]) : log1p(-pis[t])
-        end
-        return value - sum(abs2, (a .- coefficient_prior_mean) ./ coefficient_prior_sd) / 2
-    end
-
     for sweep in 1:(n_burnin + n_samples)
         burning = sweep <= n_burnin
 
-        for (t, j) in rows
-            d = Vector(view(state.DiffLambda[t], j, :))
-
-            if is_birth(alive, t, j)
-                kind = :birth
-                sigma = sigma_initial
-            else
-                # Exact conditional of the indicator given D.
-                log_active = log(pi_time[t]) + gaussian_row_logdensity(d, sigma_active)
-                log_inactive = log1p(-pi_time[t]) + gaussian_row_logdensity(d, sigma_inactive)
-                probability = exp(log_active - logsumexp2(log_active, log_inactive))
-                z[j, t] = rand(rng) < probability
-
-                # Flip move: switch component, draw D from its prior.
-                proposed_z = !z[j, t]
-                proposed_d = sigma_of(proposed_z) .* randn(rng, k)
-                change, new_values = row_increment_loglik_change(
-                    state, t, j, proposed_d .- d
-                )
-                log_ratio = change + (proposed_z ?
-                    log(pi_time[t]) - log1p(-pi_time[t]) :
-                    log1p(-pi_time[t]) - log(pi_time[t]))
-                flip_tries += 1
-                if log(rand(rng)) < log_ratio
-                    apply_row_increment!(state, t, j, proposed_d .- d, new_values)
-                    z[j, t] = proposed_z
-                    d = proposed_d
-                    flip_accept += 1
-                end
-
-                kind = z[j, t] ? :active : :inactive
-                sigma = sigma_of(z[j, t])
-            end
-
-            # Random walk within the current component.
-            step = rw_scale[kind] * sigma .* randn(rng, k)
-            change, new_values = row_increment_loglik_change(state, t, j, step)
-            log_ratio = change +
-                gaussian_row_logdensity(d .+ step, sigma) -
-                gaussian_row_logdensity(d, sigma)
-            rw_tries[kind] += 1
-            if log(rand(rng)) < log_ratio
-                apply_row_increment!(state, t, j, step, new_values)
-                rw_accept[kind] += 1
-            end
+        for chain in chains
+            mcmc_sweep!(chain, settings, rng)
         end
 
-        # Diagonal precisions: random walk on log Delta_j.
-        for j in 1:p
-            times = [t for t in 1:T if alive[t, j]]
-            isempty(times) && continue
-            old = state.Delta[j]
-            proposal = old * exp(delta_scale * randn(rng))
-            state.Delta[j] = proposal
-            new_values = [
-                time_loglikelihood(
-                    state.Lambda[t][state.obs_idx[t], :],
-                    state.Delta[state.obs_idx[t]],
-                    view(state.y, t, state.obs_idx[t])
-                ) for t in times
-            ]
-            state.Delta[j] = old
-            change = sum(new_values) - sum(state.logliks[times])
-            # Gamma prior on Delta plus the Jacobian of the log scale.
-            log_ratio = change +
-                a_delta * (log(proposal) - log(old)) - b_delta * (proposal - old)
-            delta_tries += 1
+        for i in (isodd(sweep) ? 1 : 2):2:(n_chains - 1)
+            a, b = chains[i], chains[i + 1]
+            log_ratio = (a.beta - b.beta) *
+                (sum(b.state.logliks) - sum(a.state.logliks))
+            swap_tries[i] += 1
             if log(rand(rng)) < log_ratio
-                state.Delta[j] = proposal
-                state.logliks[times] .= new_values
-                delta_accept += 1
+                swap_chain_states!(a, b)
+                swap_accept[i] += 1
             end
-        end
-
-        # Shock-probability coefficients.
-        proposal = coefficients .+ coefficient_scale .* randn(rng, 3)
-        coefficient_tries += 1
-        if log(rand(rng)) < coefficient_logtarget(proposal) - coefficient_logtarget(coefficients)
-            coefficients .= proposal
-            pi_time = shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
-            coefficient_accept += 1
         end
 
         if burning && sweep % 50 == 0
-            # Aim for acceptance rates near 0.3 during burn-in.
-            for key in keys(rw_scale)
-                rw_tries[key] > 0 || continue
-                rate = rw_accept[key] / rw_tries[key]
-                rw_scale[key] *= exp(rate - 0.3)
-                rw_accept[key] = 0
-                rw_tries[key] = 0
-            end
-            delta_scale *= exp(delta_accept / max(delta_tries, 1) - 0.3)
-            coefficient_scale *= exp(coefficient_accept / max(coefficient_tries, 1) - 0.3)
-            delta_accept = delta_tries = coefficient_accept = coefficient_tries = 0
-            flip_accept = flip_tries = 0
+            foreach(adapt_chain!, chains)
         end
 
         if !burning
-            z_sum .+= z
-            for t in 1:T
-                idx = state.obs_idx[t]
-                isempty(idx) && continue
-                L = state.Lambda[t][idx, :]
-                Omega_sum[t][idx, idx] .+= L * L' + Diagonal(state.Delta[idx])
+            for (i, chain) in enumerate(chains)
+                z_sums[i] .+= chain.z
             end
-            Delta_sum .+= state.Delta
-            coefficient_sum .+= coefficients
+            cold = chains[1]
+            for t in 1:T
+                idx = cold.state.obs_idx[t]
+                isempty(idx) && continue
+                L = cold.state.Lambda[t][idx, :]
+                Omega_sum[t][idx, idx] .+= L * L' + Diagonal(cold.state.Delta[idx])
+            end
+            Delta_sum .+= cold.state.Delta
+            coefficient_sum .+= cold.coefficients
         end
     end
 
-    gamma = z_sum ./ n_samples
-    for t in 1:T, j in 1:p
+    gamma_by_beta = [zs ./ n_samples for zs in z_sums]
+    for gamma in gamma_by_beta, t in 1:T, j in 1:p
         is_birth(alive, t, j) && (gamma[j, t] = 1.0)
     end
-    refresh_all_caches!(state)
+    cold = chains[1]
+    refresh_all_caches!(cold.state)
 
     return (
-        gamma=gamma,
+        gamma=gamma_by_beta[1],
+        gamma_by_beta=gamma_by_beta,
+        betas=copy(betas),
         Omega_mean=[O ./ n_samples for O in Omega_sum],
         Delta_mean=Delta_sum ./ n_samples,
         coefficient_mean=coefficient_sum ./ n_samples,
-        state=state,
+        state=cold.state,
         acceptance=(
-            flip=flip_accept / max(flip_tries, 1),
-            random_walk=Dict(key => rw_accept[key] / max(rw_tries[key], 1)
-                             for key in keys(rw_accept)),
-            delta=delta_accept / max(delta_tries, 1),
-            coefficients=coefficient_accept / max(coefficient_tries, 1)
-        )
+            flip=cold.flip_accept / max(cold.flip_tries, 1),
+            random_walk=Dict(key => cold.rw_accept[key] / max(cold.rw_tries[key], 1)
+                             for key in keys(cold.rw_accept)),
+            delta=cold.delta_accept / max(cold.delta_tries, 1),
+            coefficients=cold.coefficient_accept / max(cold.coefficient_tries, 1)
+        ),
+        swap_acceptance=swap_accept ./ max.(swap_tries, 1)
     )
 end
+
+"""
+Metropolis-within-Gibbs sampler for the birth-death factor model: the
+single-chain case of `parallel_tempering_time_varying`, at temperature 1.
+"""
+MCMC_time_varying(Y::Matrix{Float64}, alive::AbstractMatrix{Bool}, k::Int; kwargs...) =
+    parallel_tempering_time_varying(Y, alive, k; kwargs..., betas=[1.0])
 
 # ============================================================================
 # Precision diagnostics
