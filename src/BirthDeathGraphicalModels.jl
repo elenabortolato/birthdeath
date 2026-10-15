@@ -3552,6 +3552,7 @@ struct MCMCSettings
     continuations::Vector{Tuple{Int, Int}}
     estimate_coefficients::Bool
     shock_center::Symbol
+    coefficient_mask::Vector{Float64}
 end
 
 """
@@ -3784,7 +3785,8 @@ function mcmc_sweep!(chain::TemperedChain, settings::MCMCSettings, rng::Abstract
 
     # Shock-probability coefficients; their conditional has no likelihood term.
     settings.estimate_coefficients || return chain
-    proposal = chain.coefficients .+ chain.coefficient_scale .* randn(rng, 3)
+    proposal = chain.coefficients .+
+        chain.coefficient_scale .* settings.coefficient_mask .* randn(rng, 3)
     chain.coefficient_tries += 1
     if log(rand(rng)) <
        coefficient_logtarget(chain, settings, proposal) -
@@ -3850,6 +3852,9 @@ Random-walk scales adapt during burn-in only. With
 `estimate_coefficients = false` the coefficients stay at `coefficients_init`.
 With `shock_center = :zero` the sampler targets the reset prior (see
 `shock_slab_row`) and updates the loadings with `reset_loading_sweep!`.
+`coefficient_mask` selects which of (a0, a_birth, a_death) are sampled; the
+others stay at `coefficients_init` (for example [true, false, false] with
+a_birth = a_death = 0 gives a constant shock probability).
 
 Returns posterior means from the first chain (`gamma`, with births set to 1
 as in `EM_time_varying`; `Omega_mean`, full p x p per time and meaningful on
@@ -3875,6 +3880,7 @@ function parallel_tempering_time_varying(
     n_samples::Int=2000,
     estimate_coefficients::Bool=true,
     shock_center::Symbol=:previous,
+    coefficient_mask::Vector{Bool}=[true, true, true],
     rng::AbstractRNG=Random.default_rng()
 )
     shock_center in (:previous, :zero) ||
@@ -3889,7 +3895,8 @@ function parallel_tempering_time_varying(
         [(t, j) for t in 1:T for j in 1:p if alive[t, j]],
         [(t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)],
         estimate_coefficients,
-        shock_center
+        shock_center,
+        Float64.(coefficient_mask)
     )
     chains = [
         make_tempered_chain(beta, Lambda_init, Delta_init, coefficients_init, Y, alive, settings)
