@@ -277,6 +277,25 @@ The tempered spike reaches much higher modes, in which every shock
 probability is near zero: no loading changes are detected at all, while
 off-diagonal RV improves by about 0.05.
 
+With only the spike tempered (`TEMPERED_EM_LIKELIHOOD=0`, forced exchanges,
+spike scale from 0.075 to 1.5 across nine levels, untempered likelihood), five
+trajectories, in
+`results/experiment2/tempered_em_spike_only_p10_k2_tau150_min6.csv`; means
+over the five, with one row per spike scale for the replica at that level:
+
+| | AUROC | recall | mean γ, shocks / non-shocks | off-diagonal RV |
+|---|---|---|---|---|
+| EM | 0.585 | 0.090 | 0.091 / 0.071 | 0.739 |
+| final (τ_i = 0.075 after refinement) | 0.605 | 0.015 | 0.015 / 0.001 | 0.774 |
+| τ_i = 0.231 | 0.632 | 0.015 | 0.015 / 0.001 | 0.819 |
+| τ_i = 0.335 | 0.639 | 0.015 | 0.012 / 0.000 | 0.823 |
+| τ_i = 1.031 | 0.677 | 0.000 | 0.005 / 0.004 | 0.794 |
+
+At every spike scale the shock probabilities are near zero. The learned shock
+probability π collapses (fewer shocks lower π, which lowers the shock
+probabilities further), so widening the spike alone does not bring shocks
+back, although the ranking (AUROC) and the precision matrices improve.
+
 Tempered EM reaches a higher log posterior in every trajectory, without
 clearly improving detection. With greedy exchanges no exchange is ever accepted, so
 the replicas reduce to independent EM runs at different temperatures, and the
