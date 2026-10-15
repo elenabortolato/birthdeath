@@ -296,6 +296,22 @@ probability π collapses (fewer shocks lower π, which lowers the shock
 probabilities further), so widening the spike alone does not bring shocks
 back, although the ranking (AUROC) and the precision matrices improve.
 
+Starting the EM fit from alternating shock indicators (`TEMPERED_EM_INIT=alternating`:
+s_jt = 1 at even t, 0 at odd t, no binary splitting) and then running the same
+spike-only tempering gives, on the same five trajectories
+(`results/experiment2/tempered_em_alternating_start_p10_k2_tau150_min6.csv`):
+
+| | EM | tempered EM | best spike scale (τ_i ≈ 0.23–0.34) |
+|---|---|---|---|
+| alternating start: AUROC / recall | 0.592 / 0.000 | 0.600 / 0.008 | 0.63 / 0.008 |
+| binary splitting: AUROC / recall | 0.585 / 0.090 | 0.605 / 0.015 | 0.64 / 0.015 |
+| alternating start: log posterior | 673 | 695 | |
+| binary splitting: log posterior | 527 | 697 | |
+
+From the alternating start, EM alone reaches a log posterior close to the
+tempered one, already with no shocks called. Both starts end at the same kind
+of mode, so the result does not depend on the initialization.
+
 Tempered EM reaches a higher log posterior in every trajectory, without
 clearly improving detection. With greedy exchanges no exchange is ever accepted, so
 the replicas reduce to independent EM runs at different temperatures, and the
