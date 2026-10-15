@@ -7,7 +7,9 @@
 #                    + a_death * sum_{l dying at t} |rho_{t-1,jl}|,
 #
 # so a continuing variable is more likely to be shocked when it is strongly
-# linked to the variables entering or leaving. Each trajectory is fitted with
+# linked to the variables entering or leaving. With link=loadings the link is
+# the absolute loading inner product |<lambda_{t-1,j}, lambda_l>| instead of
+# the partial correlation. Each trajectory is fitted with
 #
 #   network  the network-informed shock probability (the true model);
 #   counts   the current model, one probability per time from birth and
@@ -17,29 +19,30 @@
 # Usage (from the repository root):
 #
 #   julia --project=. experiments/birthdeath/network_shock_test.jl \
-#       p=10 k=5 seeds=1:20 tau_active=1.5 minimum_active=6 \
+#       p=10 k=5 seeds=1:20 tau_active=1.5 minimum_active=6 link=loadings \
 #       out=results/experiment2/network_p10_k5.csv
 #
 
 include(joinpath(@__DIR__, "oracle_check.jl"))
 
-# True slopes on the summed absolute partial correlations. A summed |rho| of
-# 0.3 adds 1.2 to the log odds of a shock.
-const NETWORK_A_BIRTH = 4.0
-const NETWORK_A_DEATH = 4.0
-const NETWORK_TRUE_COEFFICIENTS = [A0, NETWORK_A_BIRTH, NETWORK_A_DEATH]
+# True slopes on the summed link strengths, chosen so that a typical link adds
+# about 1.2 to 1.4 to the log odds of a shock. Nonzero summed |rho| average
+# about 0.3 to 0.4; nonzero summed loading inner products average about 2.7.
+const NETWORK_SLOPE = Dict(:partial_correlation => 4.0, :loadings => 0.5)
 
 # Weakly informative prior for the network model's coefficients.
 const NETWORK_PRIOR_MEAN = [0.0, 0.0, 0.0]
 const NETWORK_PRIOR_SD = [2.0, 2.0, 2.0]
 
-function network_one(p, k, seed; tau_active, minimum_active)
+function network_one(p, k, seed; tau_active, minimum_active, link)
+    slope = NETWORK_SLOPE[link]
     sim = simulate_experiment2(
         p, k, seed;
         minimum_active=minimum_active,
         shock_rule=:network,
-        a_birth=NETWORK_A_BIRTH,
-        a_death=NETWORK_A_DEATH
+        network_link=link,
+        a_birth=slope,
+        a_death=slope
     )
     network_priors = (
         coefficient_prior_mean=NETWORK_PRIOR_MEAN,
@@ -55,14 +58,16 @@ function network_one(p, k, seed; tau_active, minimum_active)
 
     network_fit = fit_experiment2(
         sim, k, seed;
-        tau_active=tau_active, shock_covariates=:network, network_priors...
+        tau_active=tau_active, shock_covariates=:network, network_link=link,
+        network_priors...
     )
     counts_fit = fit_experiment2(sim, k, seed; tau_active=tau_active)
     oracle = oracle_em(
         sim, k, seed;
         tau_active=tau_active,
-        true_coefficients=NETWORK_TRUE_COEFFICIENTS,
+        true_coefficients=[A0, slope, slope],
         shock_covariates=:network,
+        network_link=link,
         network_priors...
     )
 
@@ -74,6 +79,7 @@ function network_one(p, k, seed; tau_active, minimum_active)
 
     return (
         p=p, k=k, seed=seed, tau_active=tau_active, minimum_active=minimum_active,
+        link=link, true_slope=slope,
         shock_rate=network.shock_rate,
         true_pi_mean=mean(true_pi),
         true_pi_max=maximum(true_pi),
@@ -109,7 +115,8 @@ function network_main()
         row = network_one(
             options.p, options.k, seed;
             tau_active=options.tau_active,
-            minimum_active=options.minimum_active
+            minimum_active=options.minimum_active,
+            link=options.link
         )
         @printf(
             "p=%d k=%d seed=%d  AUROC network=%.3f counts=%.3f oracle=%.3f  a_b=%.2f a_d=%.2f  (%.0fs)\n",

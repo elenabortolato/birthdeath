@@ -81,7 +81,8 @@ the row changes with a probability set by `shock_rule`:
   shared by all continuing variables;
 - `:network`: logistic(a0 + a_birth * xb[j,t] + a_death * xd[j,t]), where
   xb and xd are the summed absolute partial correlations of j with the
-  variables born and dying at t (see `network_event_covariates_at`). The
+  variables born and dying at t (see `network_event_covariates_at`;
+  `network_link` chooses partial correlations or loading inner products). The
   returned `pi_time` is then a p x T matrix.
 
 Inactive entries of `Y` and `Lambda` are stored as zero and must be interpreted
@@ -102,6 +103,7 @@ function generate_birth_death_data(
     probability_min::Float64=1e-6,
     probability_max::Float64=1.0 - 1e-6,
     shock_rule::Symbol=:counts,
+    network_link::Symbol=:partial_correlation,
     a_birth::Float64=a_event,
     a_death::Float64=a_event,
     rng::AbstractRNG=Random.default_rng()
@@ -164,7 +166,7 @@ function generate_birth_death_data(
             t == 1 && continue
 
             birth_x, death_x = network_event_covariates_at(
-                Lambda[t - 1], Lambda[t], Delta, alive, t
+                Lambda[t - 1], Lambda[t], Delta, alive, t; link=network_link
             )
             for j in 1:p
                 is_continuation(alive, t, j) || continue
@@ -701,29 +703,66 @@ function abs_partial_correlations(
 end
 
 """
+Absolute inner products |<lambda_j, lambda_l>| of the given loading rows on
+`idx`, as a p x p matrix indexed by global variable with a zero diagonal.
+"""
+function abs_loading_inner_products(
+    Lambda_rows::AbstractMatrix,
+    idx::AbstractVector{Int}
+)
+    p = size(Lambda_rows, 1)
+    R = zeros(Float64, p, p)
+    isempty(idx) && return R
+    L = Lambda_rows[idx, :]
+    R[idx, idx] .= abs.(L * L')
+    for j in idx
+        R[j, j] = 0.0
+    end
+    return R
+end
+
+"""
+Strength of the link between active variables, from loading rows: absolute
+partial correlations (`link = :partial_correlation`) or absolute loading inner
+products (`link = :loadings`).
+"""
+function event_link_strengths(Lambda_rows, Delta, idx, link::Symbol)
+    link == :partial_correlation &&
+        return abs_partial_correlations(Lambda_rows, Delta, idx)
+    link == :loadings && return abs_loading_inner_products(Lambda_rows, idx)
+    throw(ArgumentError("link must be :partial_correlation or :loadings"))
+end
+
+"""
 Network-informed event covariates, as p x T matrices. For a variable j that
 continues from t-1 to t:
 
-    death covariate = sum over l dying at t of |rho_{t-1, jl}|,
-    birth covariate = sum over l born at t of |rho~_{t, jl}|,
+    death covariate = sum over l dying at t of link_{t-1}(j, l),
+    birth covariate = sum over l born at t of link~_t(j, l).
 
-where rho_{t-1} are the partial correlations of Omega_{t-1} on the active set
-at t-1, and rho~_t those of the pre-shock precision at t: continuing rows at
-their t-1 values, newly born rows at their time-t values. Using the pre-shock
-precision keeps a variable's own shock out of its shock probability. Entries
-for non-continuing pairs are zero.
+Both use j's loading row at t-1, so a variable's own shock at t does not enter
+its shock probability. For deaths, l's row is also taken at t-1; for births,
+l has no earlier row and its row at birth is used.
+
+With `link = :partial_correlation` (default) the link is |rho_jl|, computed
+from the precision on the active set (at t-1 for deaths; for births, the
+pre-shock precision at t: continuing rows at their t-1 values, newly born
+rows at their time-t values). With `link = :loadings` it is the absolute
+inner product |sum_h lambda_{t-1,jh} lambda_{lh}|. Entries for non-continuing
+pairs are zero.
 """
 function network_event_covariates(
     Lambda::Vector{<:AbstractMatrix},
     Delta::AbstractVector,
-    alive::AbstractMatrix{Bool}
+    alive::AbstractMatrix{Bool};
+    link::Symbol=:partial_correlation
 )
     T, p = size(alive)
     birth_covariate = zeros(Float64, p, T)
     death_covariate = zeros(Float64, p, T)
     for t in 2:T
         birth_t, death_t = network_event_covariates_at(
-            Lambda[t - 1], Lambda[t], Delta, alive, t
+            Lambda[t - 1], Lambda[t], Delta, alive, t; link=link
         )
         birth_covariate[:, t] .= birth_t
         death_covariate[:, t] .= death_t
@@ -742,7 +781,8 @@ function network_event_covariates_at(
     Lambda_t::AbstractMatrix,
     Delta::AbstractVector,
     alive::AbstractMatrix{Bool},
-    t::Int
+    t::Int;
+    link::Symbol=:partial_correlation
 )
     p = size(alive, 2)
     birth_covariate = zeros(Float64, p)
@@ -754,8 +794,8 @@ function network_event_covariates_at(
     dying = [l for l in 1:p if alive[t - 1, l] && !alive[t, l]]
 
     if !isempty(dying)
-        R = abs_partial_correlations(
-            Lambda_previous, Delta, findall(view(alive, t - 1, :))
+        R = event_link_strengths(
+            Lambda_previous, Delta, findall(view(alive, t - 1, :)), link
         )
         for j in continuing
             death_covariate[j] = sum(R[j, l] for l in dying)
@@ -767,7 +807,7 @@ function network_event_covariates_at(
         for l in born
             pre_shock[l, :] .= view(Lambda_t, l, :)
         end
-        R = abs_partial_correlations(pre_shock, Delta, findall(view(alive, t, :)))
+        R = event_link_strengths(pre_shock, Delta, findall(view(alive, t, :)), link)
         for j in continuing
             birth_covariate[j] = sum(R[j, l] for l in born)
         end
@@ -2108,6 +2148,7 @@ function _EM_time_varying_core(
     coefficient_update_interval::Int=1,
     standardize_event_counts::Bool=false,
     shock_covariates::Symbol=:counts,
+    network_link::Symbol=:partial_correlation,
 
     niter::Int=100,
     step_delta::Float64=0.01,
@@ -2293,13 +2334,14 @@ function _EM_time_varying_core(
 
     # :counts uses the birth and death counts at t, shared by all variables.
     # :network gives each continuing variable its own covariates, the summed
-    # absolute partial correlations with the variables born and dying at t
-    # (see network_event_covariates). They depend on the parameters, so they
+    # link strengths with the variables born and dying at t, using partial
+    # correlations or loading inner products (network_link; see
+    # network_event_covariates). They depend on the parameters, so they
     # are recomputed from the current estimate at every iteration and held
     # fixed within it.
     if shock_covariates == :network
         birth_covariate, death_covariate =
-            network_event_covariates(Lambda, Delta, alive)
+            network_event_covariates(Lambda, Delta, alive; link=network_link)
     end
 
     shock_coefficients = [a0_init, a_birth_init, a_death_init]
@@ -2395,7 +2437,7 @@ function _EM_time_varying_core(
 
         if shock_covariates == :network && iter > 1
             birth_covariate, death_covariate =
-                network_event_covariates(state.Lambda, state.Delta, alive)
+                network_event_covariates(state.Lambda, state.Delta, alive; link=network_link)
             pi_time = shock_probabilities_from_coefficients(
                 shock_coefficients,
                 birth_covariate,
@@ -2569,7 +2611,7 @@ function _EM_time_varying_core(
 
     if shock_covariates == :network
         birth_covariate, death_covariate =
-            network_event_covariates(state.Lambda, state.Delta, alive)
+            network_event_covariates(state.Lambda, state.Delta, alive; link=network_link)
     end
     pi_time = shock_probabilities_from_coefficients(
         shock_coefficients,

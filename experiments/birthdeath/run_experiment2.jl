@@ -18,6 +18,7 @@
 #   tau_active      fitted active innovation scale tau_a          (default 0.75)
 #   minimum_active  lower bound on p_t; k+1 respects (S4)         (default k+1)
 #   out             output CSV path                               (default stdout only)
+#   link            network_shock_test.jl only: partial_correlation or loadings
 #
 # The functions simulate_experiment2, fit_experiment2 and
 # evaluate_experiment2 are also used by oracle_check.jl.
@@ -48,7 +49,8 @@ const COEFFICIENT_DAMPING = 0.05
 function parse_args(args)
     options = Dict(
         "p" => "10", "k" => "5", "seeds" => "1:5", "tau_active" => "0.75",
-        "minimum_active" => "", "out" => ""
+        "minimum_active" => "", "out" => "",
+        "link" => "partial_correlation"
     )
     for arg in args
         key, value = split(arg, "="; limit=2)
@@ -67,7 +69,8 @@ function parse_args(args)
         seeds=seeds,
         tau_active=parse(Float64, options["tau_active"]),
         minimum_active=minimum_active,
-        out=options["out"]
+        out=options["out"],
+        link=Symbol(options["link"])
     )
 end
 
@@ -90,6 +93,7 @@ function simulate_experiment2(
     p, k, seed;
     minimum_active,
     shock_rule=:counts,
+    network_link=:partial_correlation,
     a_birth=A_EVENT,
     a_death=A_EVENT
 )
@@ -115,7 +119,8 @@ function simulate_experiment2(
         a0=A0, a_event=A_EVENT,
         initial_sd=TAU0 / sqrt(k), change_sd=TAU_CHANGE / sqrt(k),
         Delta_value=DELTA,
-        shock_rule=shock_rule, a_birth=a_birth, a_death=a_death,
+        shock_rule=shock_rule, network_link=network_link,
+        a_birth=a_birth, a_death=a_death,
         rng=data_rng
     )
 end
@@ -128,6 +133,7 @@ function fit_experiment2(
     sim, k, seed;
     tau_active,
     shock_covariates=:counts,
+    network_link=:partial_correlation,
     coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
     coefficient_prior_sd=COEFFICIENT_PRIOR_SD
 )
@@ -151,6 +157,7 @@ function fit_experiment2(
         a_death_init=1.0,
         estimate_shock_coefficients=true,
         shock_covariates=shock_covariates,
+        network_link=network_link,
         coefficient_prior_mean=coefficient_prior_mean,
         coefficient_prior_sd=coefficient_prior_sd,
         coefficient_warmup=1,

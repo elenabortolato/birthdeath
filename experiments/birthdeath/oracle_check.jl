@@ -39,9 +39,11 @@ Event covariates for the shock probabilities: birth and death counts shared
 by all variables (`:counts`), or the network-informed covariates computed
 from the current state (`:network`).
 """
-function event_covariates(state, alive, shock_covariates)
+function event_covariates(state, alive, shock_covariates; network_link=:partial_correlation)
     if shock_covariates == :network
-        return BGM.network_event_covariates(state.Lambda, state.Delta, alive)
+        return BGM.network_event_covariates(
+            state.Lambda, state.Delta, alive; link=network_link
+        )
     end
     births, deaths = BGM.birth_death_counts(alive)
     return Float64.(births), Float64.(deaths)
@@ -51,11 +53,14 @@ end
 function final_gamma_and_logposterior(
     state, coefficients, alive, k, tau_active;
     shock_covariates=:counts,
+    network_link=:partial_correlation,
     coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
     coefficient_prior_sd=COEFFICIENT_PRIOR_SD
 )
     sigmas = posterior_settings(k, tau_active)
-    birth_x, death_x = event_covariates(state, alive, shock_covariates)
+    birth_x, death_x = event_covariates(
+        state, alive, shock_covariates; network_link=network_link
+    )
     pi_time = BGM.shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
     gamma = BGM.E_step_independent_advanced(
         state, pi_time;
@@ -83,6 +88,7 @@ function oracle_em(
     tau_active,
     true_coefficients=[A0, A_EVENT, A_EVENT],
     shock_covariates=:counts,
+    network_link=:partial_correlation,
     coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
     coefficient_prior_sd=COEFFICIENT_PRIOR_SD,
     niter=500,
@@ -103,7 +109,9 @@ function oracle_em(
     for iter in 1:niter
         # Network covariates depend on the parameters: recompute them from
         # the current state and hold them fixed within the iteration.
-        birth_x, death_x = event_covariates(state, sim.alive, shock_covariates)
+        birth_x, death_x = event_covariates(
+            state, sim.alive, shock_covariates; network_link=network_link
+        )
         pi_time = BGM.shock_probabilities_from_coefficients(coefficients, birth_x, death_x)
 
         gamma = BGM.E_step_independent_advanced(
@@ -150,7 +158,7 @@ function oracle_em(
 
     gamma, logposterior = final_gamma_and_logposterior(
         state, coefficients, sim.alive, k, tau_active;
-        shock_covariates=shock_covariates, priors...
+        shock_covariates=shock_covariates, network_link=network_link, priors...
     )
     return (state=state, gamma=gamma, coefficients=coefficients,
             logposterior=logposterior)
