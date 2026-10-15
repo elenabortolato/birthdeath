@@ -3,13 +3,14 @@
 #
 # The fitting-strategy comparison showed that higher posterior modes than the
 # default EM fit's exist and that they call almost no shocks. This script runs
-# parallel_tempered_EM (nine temperatures, geometric from 1 to 0.2) from the
-# default EM fit and compares the two on shock detection, precision recovery
+# parallel_tempered_EM (nine EM replicas at temperatures geometric from 1 to
+# 0.2, run in parallel on threads, exchanging temperatures) from the default
+# EM fit and compares the two on shock detection, precision recovery
 # and log posterior.
 #
 # Usage (from the repository root):
 #
-#   julia --project=. experiments/birthdeath/tempered_em_check.jl \
+#   julia -t 4 --project=. experiments/birthdeath/tempered_em_check.jl \
 #       p=10 k=2 seeds=1:20 tau_active=1.5 minimum_active=6 \
 #       out=results/experiment2/tempered_em_p10_k2.csv
 #
@@ -50,7 +51,7 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
             shock_metrics(sim, fit.gamma),
             precision_metrics(sim, em_precisions(fit)),
             (logposterior=fit.final_logposterior, chosen_beta=NaN,
-             swap_acceptance_min=NaN)
+             swap_acceptance_min=NaN, replicas_visiting_beta_one=0)
         ),
         merge(
             base, (method="tempered_em",),
@@ -58,7 +59,8 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
             precision_metrics(sim, [L * L' + Diagonal(tempered.Delta) for L in tempered.Lambda]),
             (logposterior=tempered.final_logposterior,
              chosen_beta=tempered.chosen_beta,
-             swap_acceptance_min=minimum(tempered.swap_acceptance))
+             swap_acceptance_min=minimum(tempered.swap_acceptance),
+             replicas_visiting_beta_one=tempered.replicas_visiting_beta_one)
         )
     ]
 end

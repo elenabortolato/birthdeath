@@ -2842,22 +2842,27 @@ end
 """
 Parallel-tempered (replica-exchange) generalized EM.
 
-One replica per likelihood temperature in `betas` runs generalized EM on the
-tempered objective beta * loglik + log prior, all starting from the same
-values (typically an `EM_time_varying` fit). Every `swap_interval`
-iterations, neighbouring replicas propose to exchange states. With
+Several generalized EM runs (replicas) start from the same values (typically
+an `EM_time_varying` fit), one at each likelihood temperature in `betas`, and
+run in parallel on Julia threads: each maximizes its tempered objective
+beta * loglik + log prior. Every `swap_interval` iterations, the replicas at
+neighbouring temperatures propose to exchange their temperatures. With
 `exchange = :metropolis` (default) the exchange is accepted with probability
 min(1, exp((beta_i - beta_j) (loglik_j - loglik_i))), as in parallel
 tempering. With `:greedy` it is accepted exactly when that ratio exceeds 1,
 that is when it increases the sum of the replicas' tempered log likelihoods;
-with `:always` every proposed exchange is made. Low-temperature replicas move between shock
-configurations more easily, and exchanges carry their states towards
-beta = 1. After `n_tempered` iterations, the replica state with the highest
-untempered log posterior is kept and refined by untempered generalized EM
-until the gain falls below `tol` or `n_polish` iterations.
+with `:always` every proposed exchange is made. Replicas at low temperature
+move between shock configurations more easily, and exchanges bring their
+states to beta = 1.
+
+After `n_tempered` iterations, the replica with the highest untempered log
+posterior is kept and refined by untempered generalized EM until the gain
+falls below `tol` or `n_polish` iterations.
 
 This is a search for a higher mode of the posterior; it is not a sampler.
-Shock probabilities use the birth and death counts at each time.
+Shock probabilities use the birth and death counts at each time. Start Julia
+with several threads (for example `julia -t 4`) to run the replicas in
+parallel; with one thread they run in turn and the result is the same.
 """
 function parallel_tempered_EM(
     Y::Matrix{Float64},
@@ -2906,43 +2911,55 @@ function parallel_tempered_EM(
         )
         for beta in betas
     ]
+    # Each replica has its own random stream, so the replicas can run on
+    # separate threads and the result does not depend on the thread count.
+    replica_rngs = [MersenneTwister(rand(rng, UInt64)) for _ in replicas]
+
     n = length(replicas)
+    # at_level[i] is the replica currently at temperature betas[i].
+    at_level = collect(1:n)
     swap_accept = zeros(Int, max(n - 1, 0))
     swap_tries = zeros(Int, max(n - 1, 0))
+    visited_beta_one = falses(n)
+    visited_beta_one[at_level[1]] = true
 
     for iter in 1:n_tempered
-        for replica in replicas
-            tempered_em_step!(replica, settings, birth_x, death_x, rng)
+        Threads.@threads for r in 1:n
+            tempered_em_step!(replicas[r], settings, birth_x, death_x, replica_rngs[r])
         end
         if iter % swap_interval == 0
             first_pair = isodd(div(iter, swap_interval)) ? 1 : 2
             for i in first_pair:2:(n - 1)
-                a, b = replicas[i], replicas[i + 1]
+                a, b = replicas[at_level[i]], replicas[at_level[i + 1]]
                 log_ratio = (a.beta - b.beta) *
                     (sum(b.state.logliks) - sum(a.state.logliks))
                 swap_tries[i] += 1
                 accept = exchange == :metropolis ? log(rand(rng)) < log_ratio :
                          exchange == :greedy ? log_ratio > 0 : true
                 if accept
-                    a.state, b.state = b.state, a.state
-                    a.coefficients, b.coefficients = b.coefficients, a.coefficients
-                    a.pi_time, b.pi_time = b.pi_time, a.pi_time
+                    a.beta, b.beta = b.beta, a.beta
+                    at_level[i], at_level[i + 1] = at_level[i + 1], at_level[i]
                     swap_accept[i] += 1
                 end
             end
+            visited_beta_one[at_level[1]] = true
         end
     end
 
-    # Keep the replica state with the highest untempered log posterior.
-    scores = [replica_posterior(replica, settings)[2] for replica in replicas]
+    # Keep the replica with the highest untempered log posterior.
+    scores = Vector{Float64}(undef, n)
+    Threads.@threads for r in 1:n
+        scores[r] = replica_posterior(replicas[r], settings)[2]
+    end
     chosen = argmax(scores)
     best = replicas[chosen]
+    chosen_beta = best.beta
     best.beta = 1.0
 
     previous = scores[chosen]
     polish_iterations = 0
     for _ in 1:n_polish
-        tempered_em_step!(best, settings, birth_x, death_x, rng)
+        tempered_em_step!(best, settings, birth_x, death_x, replica_rngs[chosen])
         polish_iterations += 1
         _, current = replica_posterior(best, settings)
         abs(current - previous) <= tol * (1 + abs(previous)) && break
@@ -2957,8 +2974,9 @@ function parallel_tempered_EM(
         gamma=gamma,
         coefficient_vector=copy(best.coefficients),
         final_logposterior=final_logposterior,
-        chosen_beta=betas[chosen],
+        chosen_beta=chosen_beta,
         replica_logposteriors=scores,
+        replicas_visiting_beta_one=count(visited_beta_one),
         polish_iterations=polish_iterations,
         swap_acceptance=swap_accept ./ max.(swap_tries, 1)
     )
