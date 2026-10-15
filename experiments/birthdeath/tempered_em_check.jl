@@ -15,13 +15,15 @@
 #       out=results/experiment2/tempered_em_p10_k2.csv
 #
 # TEMPERED_EM_EXCHANGE sets the exchange rule: metropolis (default), greedy,
-# always or rank.
+# always or rank. TEMPERED_EM_SPIKE=1 also tempers the inactive (spike) scale.
 #
 
 include(joinpath(@__DIR__, "mcmc_check.jl"))
 
 # Exchange rule between replicas: metropolis, greedy, always or rank.
 const EXCHANGE = Symbol(get(ENV, "TEMPERED_EM_EXCHANGE", "metropolis"))
+# Set TEMPERED_EM_SPIKE=1 to temper the inactive (spike) scale as well.
+const TEMPER_SPIKE = get(ENV, "TEMPERED_EM_SPIKE", "0") == "1"
 
 function tempered_em_one(p, k, seed; tau_active, minimum_active)
     sim = simulate_experiment2(p, k, seed; minimum_active=minimum_active)
@@ -40,11 +42,13 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
         coefficient_prior_sd=COEFFICIENT_PRIOR_SD,
         coefficient_damping=COEFFICIENT_DAMPING,
         exchange=EXCHANGE,
+        temper_spike=TEMPER_SPIKE,
         rng=MersenneTwister(70_000 + seed)
     )
 
     base = (p=p, k=k, seed=seed, tau_active=tau_active,
-            minimum_active=minimum_active, exchange=string(EXCHANGE))
+            minimum_active=minimum_active, exchange=string(EXCHANGE),
+            temper_spike=TEMPER_SPIKE)
     return [
         merge(
             base, (method="em",),

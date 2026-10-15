@@ -2776,11 +2776,14 @@ One generalized EM iteration on the tempered objective
 beta * loglik + log prior: E-step, Delta step, loading-difference step and a
 damped update of the shock coefficients, as in `EM_time_varying`.
 """
-function tempered_em_step!(replica::EMReplica, settings, birth_x, death_x, rng)
+function tempered_em_step!(
+    replica::EMReplica, settings, birth_x, death_x, rng;
+    sigma_inactive::Float64=settings.sigma_inactive
+)
     gamma = E_step_independent_advanced(
         replica.state, replica.pi_time;
         sigma_active=settings.sigma_active,
-        sigma_inactive=settings.sigma_inactive
+        sigma_inactive=sigma_inactive
     )
     update_Delta_bayes!(
         replica.state, gamma, replica.pi_time;
@@ -2788,7 +2791,7 @@ function tempered_em_step!(replica::EMReplica, settings, birth_x, death_x, rng)
         Delta_min=1e-10, Delta_max=1e6,
         sigma_initial=settings.sigma_initial,
         sigma_active=settings.sigma_active,
-        sigma_inactive=settings.sigma_inactive,
+        sigma_inactive=sigma_inactive,
         likelihood_temperature=replica.beta
     )
     update_DiffLambda_hess!(
@@ -2796,7 +2799,7 @@ function tempered_em_step!(replica::EMReplica, settings, birth_x, death_x, rng)
         step=1.0, max_jump=1.0,
         sigma_initial=settings.sigma_initial,
         sigma_active=settings.sigma_active,
-        sigma_inactive=settings.sigma_inactive,
+        sigma_inactive=sigma_inactive,
         likelihood_temperature=replica.beta,
         rng=rng
     )
@@ -2863,6 +2866,13 @@ After `n_tempered` iterations, the replica with the highest untempered log
 posterior is kept and refined by untempered generalized EM until the gain
 falls below `tol` or `n_polish` iterations.
 
+With `temper_spike = true` the inactive (spike) scale is tempered too: a
+replica at temperature beta uses an inactive scale that grows geometrically in
+log beta from `sigma_inactive` at beta = 1 to `sigma_inactive_hot` (default
+`sigma_active`) at the lowest beta, so at high temperature a zero loading
+change no longer has a large prior-density advantage. Scoring and the final
+refinement use the untempered model.
+
 This is a search for a higher mode of the posterior; it is not a sampler.
 Shock probabilities use the birth and death counts at each time. Start Julia
 with several threads (for example `julia -t 4`) to run the replicas in
@@ -2878,6 +2888,8 @@ function parallel_tempered_EM(
     betas::Vector{Float64}=collect(0.2 .^ ((0:8) ./ 8)),
     swap_interval::Int=5,
     exchange::Symbol=:metropolis,
+    temper_spike::Bool=false,
+    sigma_inactive_hot::Float64=sigma_active,
     n_tempered::Int=200,
     n_polish::Int=500,
     tol::Float64=1e-6,
@@ -2919,6 +2931,15 @@ function parallel_tempered_EM(
     # separate threads and the result does not depend on the thread count.
     replica_rngs = [MersenneTwister(rand(rng, UInt64)) for _ in replicas]
 
+    # With temper_spike, the inactive scale widens with temperature,
+    # geometrically in log beta: sigma_inactive at beta = 1, sigma_inactive_hot
+    # at the lowest beta.
+    beta_min = minimum(betas)
+    spike_scale(beta) =
+        !temper_spike || beta >= 1 || beta_min >= 1 ? sigma_inactive :
+        exp(log(sigma_inactive) +
+            log(beta) / log(beta_min) * (log(sigma_inactive_hot) - log(sigma_inactive)))
+
     n = length(replicas)
     # at_level[i] is the replica currently at temperature betas[i].
     at_level = collect(1:n)
@@ -2929,7 +2950,10 @@ function parallel_tempered_EM(
 
     for iter in 1:n_tempered
         Threads.@threads for r in 1:n
-            tempered_em_step!(replicas[r], settings, birth_x, death_x, replica_rngs[r])
+            tempered_em_step!(
+                replicas[r], settings, birth_x, death_x, replica_rngs[r];
+                sigma_inactive=spike_scale(replicas[r].beta)
+            )
         end
         if iter % swap_interval == 0 && exchange == :rank
             # Reassign temperatures by fit: the replica with the highest
