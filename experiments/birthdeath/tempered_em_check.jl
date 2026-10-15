@@ -27,12 +27,24 @@ const TEMPER_SPIKE = get(ENV, "TEMPERED_EM_SPIKE", "0") == "1"
 # Set TEMPERED_EM_LIKELIHOOD=0 to leave the likelihood untempered, so that the
 # temperatures only set each replica's spike scale.
 const TEMPER_LIKELIHOOD = get(ENV, "TEMPERED_EM_LIKELIHOOD", "1") == "1"
+# Set TEMPERED_EM_INIT=alternating to start the EM fit from alternating shock
+# indicators (s_jt = 1 at even t, 0 at odd t) instead of binary splitting.
+const INIT = get(ENV, "TEMPERED_EM_INIT", "splitting")
 # Set TEMPERED_EM_LEVELS=1 to add one output row per temperature level.
 const REPORT_LEVELS = get(ENV, "TEMPERED_EM_LEVELS", "0") == "1"
 
 function tempered_em_one(p, k, seed; tau_active, minimum_active)
     sim = simulate_experiment2(p, k, seed; minimum_active=minimum_active)
-    fit = fit_experiment2(sim, k, seed; tau_active=tau_active)
+    fit = if INIT == "alternating"
+        T_, p_ = size(sim.alive)
+        alternating = [iseven(t) ? 1.0 : 0.0 for j in 1:p_, t in 1:T_]
+        fit_experiment2(
+            sim, k, seed;
+            tau_active=tau_active, changepoint_init=false, gamma_init=alternating
+        )
+    else
+        fit_experiment2(sim, k, seed; tau_active=tau_active)
+    end
     tempered = parallel_tempered_EM(
         sim.Y, sim.alive, k;
         Lambda_init=[copy(L) for L in fit.Lambda],
@@ -54,7 +66,8 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
 
     base = (p=p, k=k, seed=seed, tau_active=tau_active,
             minimum_active=minimum_active, exchange=string(EXCHANGE),
-            temper_spike=TEMPER_SPIKE, temper_likelihood=TEMPER_LIKELIHOOD)
+            temper_spike=TEMPER_SPIKE, temper_likelihood=TEMPER_LIKELIHOOD,
+            init=INIT)
     rows = [
         merge(
             base, (method="em",),

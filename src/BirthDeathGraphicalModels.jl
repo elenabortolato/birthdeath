@@ -2152,6 +2152,7 @@ function _EM_time_varying_core(
     gamma_prior_beta::Float64=1.0,
     gamma_min::Float64=1e-10,
     gamma_max::Float64=1.0 - 1e-10,
+    gamma_init::Union{Nothing, AbstractMatrix}=nothing,
 
     a0_init::Float64=0.0,
     a_birth_init::Float64=0.0,
@@ -2386,6 +2387,15 @@ function _EM_time_varying_core(
                     gamma[j, changepoint] = gamma_active_init
                 end
             end
+        end
+    end
+    # A user-supplied p x T matrix sets the initial shock probabilities of
+    # the continuations directly, replacing the values above.
+    if gamma_init !== nothing
+        size(gamma_init) == (p, T) ||
+            throw(DimensionMismatch("gamma_init must have size ($p,$T)"))
+        for t in 2:T, j in 1:p
+            is_continuation(alive, t, j) && (gamma[j, t] = Float64(gamma_init[j, t]))
         end
     end
     clamp_continuation_gamma!(gamma)
