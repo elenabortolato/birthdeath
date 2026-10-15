@@ -504,7 +504,7 @@ run per setting, as in the paper, and each trajectory is fitted twice:
 
 CSVs are in `results/paper/`. Running
 `python3 experiments/paper/summarize.py results/paper` prints every table,
-as mean (SD) across trajectories. Experiment I at p = 50 has seeds 1–4 so far.
+as mean (SD) across trajectories.
 
 | Script | Experiment |
 |---|---|
@@ -540,16 +540,16 @@ Design choices not fixed by the paper:
 - MCMC gives a similar Ω but does not localize the change. Under
   misspecification, the posterior spreads the change over many small shocks.
 
-### Experiment I, p = 50 (k = 15; seeds 1–4, seed 5 in progress)
+### Experiment I, p = 50 (k = 15)
 
 | | RV | RFE | q | RV off-diag. | RV partial corr. | mean γ at t* = 26 | mean γ elsewhere |
 |---|---|---|---|---|---|---|---|
-| EM | 0.80 (0.03) | 0.61 | 0.68 | **0.13** | 0.14 | 0.02 | 0.00 |
-| MCMC | 0.81 (0.01) | 1.02 | 1.59 | **0.19** | 0.19 | 0.30 | 0.29 |
+| EM | 0.80 (0.02) | 0.62 | 0.69 | **0.12** | 0.14 | 0.02 | 0.00 |
+| MCMC | 0.81 (0.01) | 0.99 | 1.54 | **0.18** | 0.19 | 0.27 | 0.27 |
 
 - Full RV is close to the paper's 0.87, but the diagonal carries it. The
   sparse off-diagonal structure is almost entirely lost (off-diagonal RV
-  0.13–0.19).
+  0.12–0.18).
 - Neither method detects the changepoint at p = 50.
 - One trajectory takes about 75 minutes (47 for EM, 31 for MCMC), because
   every variable is active for all 50 time points.
