@@ -14,6 +14,7 @@ export TensorPrecisionModel,
        MCMC_time_varying,
        parallel_tempering_time_varying,
        parallel_tempered_EM,
+       shock_crossover_EM,
        active_precision,
        active_precision_errors,
        compare_active_precision_matrices,
@@ -3065,6 +3066,168 @@ function parallel_tempered_EM(
         level_Delta=level_Delta,
         polish_iterations=polish_iterations,
         swap_acceptance=swap_accept ./ max.(swap_tries, 1)
+    )
+end
+
+# ============================================================================
+# Shock-crossover EM
+# ============================================================================
+
+"""
+Orthogonal k x k matrix R minimizing sum_t ||Lambda_b,t R - Lambda_a,t||_F over
+the active rows at every time (Procrustes), so that b's loadings can be
+compared with a's despite the rotational non-identifiability.
+"""
+function procrustes_rotation(state_a::TensorPrecisionModel, state_b::TensorPrecisionModel)
+    k = size(state_a.Lambda[1], 2)
+    cross = zeros(Float64, k, k)
+    for t in eachindex(state_a.Lambda)
+        idx = state_a.obs_idx[t]
+        isempty(idx) && continue
+        cross .+= state_b.Lambda[t][idx, :]' * state_a.Lambda[t][idx, :]
+    end
+    decomposition = svd(cross)
+    return decomposition.U * decomposition.Vt
+end
+
+"""
+Exchange variable j's loading path between replicas a and b: its loading
+differences at every time, b's taken in a's orientation (rotation R from
+`procrustes_rotation(a, b)`) and a's in b's orientation.
+"""
+function swap_variable_path!(a::EMReplica, b::EMReplica, j::Int, R::AbstractMatrix)
+    for t in eachindex(a.state.DiffLambda)
+        a.state.alive[t, j] || continue
+        row_a = Vector(view(a.state.DiffLambda[t], j, :))
+        row_b = Vector(view(b.state.DiffLambda[t], j, :))
+        view(a.state.DiffLambda[t], j, :) .= R' * row_b
+        view(b.state.DiffLambda[t], j, :) .= R * row_a
+    end
+    refresh_all_caches!(a.state)
+    refresh_all_caches!(b.state)
+    return nothing
+end
+
+"""
+Shock-crossover EM.
+
+Several generalized EM replicas run on the untempered model, each started from
+its own pattern of shock indicators (`patterns`, a vector of p x T matrices;
+each replica first runs `n_warmup` iterations of `EM_time_varying` from random
+loadings with `gamma_init` set to its pattern and no binary splitting). Every
+`crossover_interval` iterations the replicas are paired at random and each
+pair exchanges the whole loading path (the loading differences at every time)
+of one randomly chosen variable, after aligning the two replicas by an
+orthogonal Procrustes rotation. Exchanges are always made. After `n_iter`
+iterations the replica with the highest log posterior is refined by
+generalized EM until the gain falls below `tol` or `n_polish` iterations.
+
+`em_settings` holds the keyword arguments shared with `EM_time_varying`
+(prior scales, Delta and coefficient priors, damping). The result gives the
+refined replica and, for every replica, its shock probabilities, loadings,
+Delta and log posterior at the end of the crossover phase.
+"""
+function shock_crossover_EM(
+    Y::Matrix{Float64},
+    alive_input::AbstractMatrix{Bool},
+    k::Int;
+    patterns::Vector{<:AbstractMatrix},
+    em_settings::NamedTuple,
+    n_warmup::Int=20,
+    n_iter::Int=200,
+    crossover_interval::Int=5,
+    n_polish::Int=500,
+    tol::Float64=1e-6,
+    rng::AbstractRNG=Random.default_rng()
+)
+    alive = BitMatrix(alive_input)
+    T, p = size(alive)
+    births, deaths = birth_death_counts(alive)
+    birth_x = Float64.(births)
+    death_x = Float64.(deaths)
+    settings = (
+        sigma_initial=em_settings.sigma_initial,
+        sigma_active=em_settings.sigma_active,
+        sigma_inactive=em_settings.sigma_inactive,
+        a_delta=em_settings.a_delta,
+        b_delta=em_settings.b_delta,
+        coefficient_prior_mean=em_settings.coefficient_prior_mean,
+        coefficient_prior_sd=em_settings.coefficient_prior_sd,
+        coefficient_damping=em_settings.coefficient_damping
+    )
+
+    n = length(patterns)
+    replica_rngs = [MersenneTwister(rand(rng, UInt64)) for _ in 1:n]
+    replicas = Vector{EMReplica}(undef, n)
+    Threads.@threads for r in 1:n
+        Lambda_init = initialize_loading_paths(alive, k; scale=0.2, rng=replica_rngs[r])
+        fit = EM_time_varying(
+            Y, alive, k;
+            Lambda_init=Lambda_init,
+            changepoint_init=false,
+            gamma_init=patterns[r],
+            niter=n_warmup,
+            annealed_iterations=1,
+            sigma_inactive_start=em_settings.sigma_inactive,
+            verbose=false,
+            rng=replica_rngs[r],
+            em_settings...
+        )
+        replicas[r] = EMReplica(
+            1.0, fit.state, copy(fit.coefficient_vector),
+            shock_probabilities_from_coefficients(fit.coefficient_vector, birth_x, death_x)
+        )
+    end
+
+    ever_alive = findall(vec(any(alive, dims=1)))
+    n_crossovers = 0
+    for iter in 1:n_iter
+        Threads.@threads for r in 1:n
+            tempered_em_step!(replicas[r], settings, birth_x, death_x, replica_rngs[r])
+        end
+        if iter % crossover_interval == 0 && n >= 2
+            order = randperm(rng, n)
+            for i in 1:2:(n - 1)
+                a, b = replicas[order[i]], replicas[order[i + 1]]
+                j = ever_alive[rand(rng, 1:length(ever_alive))]
+                swap_variable_path!(a, b, j, procrustes_rotation(a.state, b.state))
+                n_crossovers += 1
+            end
+        end
+    end
+
+    replica_gamma = Vector{Matrix{Float64}}(undef, n)
+    replica_logposterior = Vector{Float64}(undef, n)
+    Threads.@threads for r in 1:n
+        replica_gamma[r], replica_logposterior[r] = replica_posterior(replicas[r], settings)
+    end
+    replica_Lambda = [[copy(L) for L in replica.state.Lambda] for replica in replicas]
+    replica_Delta = [copy(replica.state.Delta) for replica in replicas]
+
+    chosen = argmax(replica_logposterior)
+    best = replicas[chosen]
+    previous = replica_logposterior[chosen]
+    for _ in 1:n_polish
+        tempered_em_step!(best, settings, birth_x, death_x, replica_rngs[chosen])
+        _, current = replica_posterior(best, settings)
+        abs(current - previous) <= tol * (1 + abs(previous)) && break
+        previous = current
+    end
+    gamma, final_logposterior = replica_posterior(best, settings)
+    refresh_all_caches!(best.state)
+
+    return (
+        Lambda=best.state.Lambda,
+        Delta=best.state.Delta,
+        gamma=gamma,
+        coefficient_vector=copy(best.coefficients),
+        final_logposterior=final_logposterior,
+        chosen_replica=chosen,
+        n_crossovers=n_crossovers,
+        replica_gamma=replica_gamma,
+        replica_Lambda=replica_Lambda,
+        replica_Delta=replica_Delta,
+        replica_logposterior=replica_logposterior
     )
 end
 
