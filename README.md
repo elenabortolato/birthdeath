@@ -308,6 +308,11 @@ spike-only tempering gives, on the same five trajectories
 | alternating start: log posterior | 673 | 695 | |
 | binary splitting: log posterior | 527 | 697 | |
 
+A checkerboard start (`TEMPERED_EM_INIT=checkerboard`, s_jt = 1 when
+(t − 1 + j) mod 4 = 0) gives the same picture on the same five trajectories
+(`results/experiment2/tempered_em_checkerboard4_start_p10_k2_tau150_min6.csv`):
+EM ends with almost no shocks and tempering adds little.
+
 From the alternating start, EM alone reaches a log posterior close to the
 tempered one, already with no shocks called. Both starts end at the same kind
 of mode, so the result does not depend on the initialization.
