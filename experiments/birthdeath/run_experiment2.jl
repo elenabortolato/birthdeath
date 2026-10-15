@@ -128,6 +128,8 @@ end
 """
 Fit the estimator to a simulated trajectory with the paper's settings.
 `shock_covariates = :network` fits the network-informed shock probabilities.
+`fit_seed` sets the random start, and any further keyword arguments override
+the corresponding EM_time_varying settings.
 """
 function fit_experiment2(
     sim, k, seed;
@@ -135,12 +137,13 @@ function fit_experiment2(
     shock_covariates=:counts,
     network_link=:partial_correlation,
     coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
-    coefficient_prior_sd=COEFFICIENT_PRIOR_SD
+    coefficient_prior_sd=COEFFICIENT_PRIOR_SD,
+    fit_seed=10_000 + seed,
+    overrides...
 )
-    fit_rng = MersenneTwister(10_000 + seed)
+    fit_rng = MersenneTwister(fit_seed)
     Lambda_init = initialize_loading_paths(sim.alive, k; scale=0.2, rng=fit_rng)
-    return EM_time_varying(
-        sim.Y, sim.alive, k;
+    settings = (
         Lambda_init=Lambda_init,
         changepoint_init=true,
         min_segment_length=1,
@@ -178,6 +181,9 @@ function fit_experiment2(
         verbose=false,
         rng=fit_rng
     )
+    # Keyword overrides replace the paper's settings above, for example
+    # annealed_iterations or changepoint_init.
+    return EM_time_varying(sim.Y, sim.alive, k; merge(settings, overrides)...)
 end
 
 """
