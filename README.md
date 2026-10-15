@@ -162,6 +162,26 @@ model ranks shocks better (AUROC 0.66) because the true shocks cluster at
 event times, which its covariates capture without relying on the estimated
 network.
 
+### Fitting strategies
+
+`fit_strategies.jl` compares fitting strategies on the k = 2 trajectories of
+the oracle check (p = 10, τ_a = 1.5, `minimum_active = 6`, 20 trajectories).
+The CSV is `results/experiment2/strategies_p10_k2_tau150_min6.csv`.
+
+| strategy | shock AUROC | recall | off-diagonal RV | log posterior ≥ oracle's |
+|---|---|---|---|---|
+| default | 0.59 | 0.10 | 0.78 | 3 of 20 |
+| best of 5 restarts | 0.60 | 0.09 | 0.79 | 7 of 20 |
+| annealing of τ_i over 50 iterations | 0.64 | 0.01 | 0.80 | 20 of 20 |
+| all-inactive start | 0.64 | 0.00 | 0.80 | 20 of 20 |
+| all-inactive start + annealing | 0.64 | 0.01 | 0.80 | 20 of 20 |
+| oracle (EM from the truth) | 0.94 | 0.87 | 0.94 | |
+
+Annealing and the all-inactive start reach a log posterior about 146 above
+the oracle's, the median over trajectories, while calling almost no shocks.
+The MAP objective therefore favours solutions without shocks over the true
+ones, and better optimization alone makes detection worse rather than better.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
