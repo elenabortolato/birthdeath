@@ -26,9 +26,9 @@ uses a generalized EM algorithm.
 └── legacy/                              earlier MCMC samplers, kept for reference
 ```
 
-The scripts for Experiment I (piecewise-constant precision), Experiment III
-(endogenous exit), the competitor fits and the prior plots are not in the
-repository yet.
+`experiments/paper/` reruns Experiments I–IV, the ablation and the rank
+sensitivity analysis (see "Results: the paper's simulation study" below). The
+competitor fits and the prior plots are not in the repository yet.
 
 ## Setup
 
@@ -491,6 +491,118 @@ covered.
 
 Neither rule changes the outcome. Tempered EM ends at the EM mode, or at one
 with fewer shocks, whatever the temperatures its replicas pass through.
+
+## Results: the paper's simulation study (`experiments/paper/`)
+
+These scripts rerun every simulation in Section 7 of the paper for the
+BirthDeath estimator; competitors are not included. Five trajectories are
+run per setting, as in the paper, and each trajectory is fitted twice:
+
+- **EM**, with the paper's settings;
+- **MCMC**: one Metropolis-within-Gibbs chain started from the EM fit,
+  500 + 1000 sweeps (about 1 minute at p = 10).
+
+CSVs are in `results/paper/`. Running
+`python3 experiments/paper/summarize.py results/paper` prints every table,
+as mean (SD) across trajectories. The p = 50 runs are still in progress.
+
+| Script | Experiment |
+|---|---|
+| `experiment1.jl p=10\|50` | I: piecewise-constant sparse precision, change at t* = 26 |
+| `experiment2.jl p=10\|50` | II: dynamic birth–death factor model |
+| `experiment2.jl variant=ablation` | ablation of the shock probability: a_b = a_d = 0 |
+| `experiment2.jl k_fit=2\|8\|12` | sensitivity to the fitted rank |
+| `experiment3.jl mechanism=history` | III: endogenous exits driven by the previous observation |
+| `experiment3.jl mechanism=stochastic\|contemporaneous` | IV: stochastic history-dependent exits, and contemporaneous selection |
+
+Design choices not fixed by the paper:
+
+- Experiment II keeps p_t ≥ k + 1.
+- Experiments III and IV:
+  - all variables are active at t = 1;
+  - an exit that would leave p_t ≤ k is cancelled;
+  - the stochastic exit rule uses β = −2, with α calibrated to the exit rate
+    Φ(−1.25) of the deterministic rule.
+- "Far from the boundary" means, at each t, the active variables with
+  z_tj > c + 1.
+
+### Experiment I, p = 10 (k = 5)
+
+| | RV | RFE | q | RFE adj. | RV off-diag. | mean γ at t* = 26 | mean γ elsewhere |
+|---|---|---|---|---|---|---|---|
+| EM | 0.82 (0.02) | 1.11 (0.46) | 1.69 | 0.57 | 0.62 | **0.76** | 0.07 |
+| MCMC | 0.83 (0.05) | 1.36 (0.72) | 2.00 | 0.55 | 0.64 | 0.19 | 0.11 |
+
+- EM reproduces the paper's RV (0.82 here against 0.89 reported) and finds the
+  changepoint clearly.
+- The large RFE comes from scale: q > 1, so the fits overestimate the
+  precision scale, and RFE adj. is 0.55–0.57.
+- MCMC gives a similar Ω but does not localize the change. Under
+  misspecification, the posterior spreads the change over many small shocks.
+
+### Experiment II, p = 10 (k_true = k_fit = 5)
+
+| | RV | RFE | q | RV off-diag. | RV partial corr. | block RV | AUROC | precision / recall | γ true / other shocks |
+|---|---|---|---|---|---|---|---|---|---|
+| EM | 0.85 (0.04) | 0.65 | **0.52** | 0.72 | 0.77 | 0.86 | 0.60 | 0.10 / 0.06 | 0.06 / 0.06 |
+| MCMC | **0.89** (0.03) | **0.47** | **0.96** | **0.79** | **0.83** | 0.88 | 0.63 | **0.23 / 0.15** | 0.35 / 0.30 |
+
+- EM reproduces the paper on the common block (RV 0.86).
+- EM underestimates the scale of Ω by half (q = 0.52), which accounts for
+  most of its RFE. MCMC gets the scale right and is better on every
+  precision metric.
+
+### Ablation of the event-informed shock probability, p = 10
+
+| | event times: precision / recall / spec. / AUROC / Brier | non-event times: precision / recall / spec. / AUROC / Brier |
+|---|---|---|
+| full, EM | 0.15 / 0.09 / 0.87 / 0.57 / 0.315 | 0.09 / 0.05 / 0.95 / 0.55 / 0.127 |
+| a_b = a_d = 0, EM | 0.10 / 0.07 / 0.87 / 0.56 / 0.324 | 0.09 / 0.05 / 0.94 / 0.55 / 0.129 |
+| full, MCMC | 0.30 / **0.47** / 0.61 / 0.56 / 0.227 | 0.17 / 0.05 / 0.97 / 0.61 / 0.125 |
+| a_b = a_d = 0, MCMC | 0.35 / 0.21 / 0.86 / **0.65** / **0.204** | 0.14 / 0.15 / 0.90 / 0.60 / 0.171 |
+
+- With EM, the birth–death regression changes almost nothing.
+- With MCMC, it moves shock calls towards event times: recall there is 0.47
+  against 0.21, but specificity is lower. It does not improve
+  discrimination: AUROC at event times is 0.56 for the full model against
+  0.65 for the restricted one.
+
+### Rank sensitivity, p = 10, k_true = 5
+
+| k_fit | RV off-diag. (EM / MCMC) | RFE (EM / MCMC) | AUROC (EM / MCMC) | recall (EM / MCMC) | Brier (EM / MCMC) | entropy H_γ (EM / MCMC) |
+|---|---|---|---|---|---|---|
+| 2 | 0.71 / 0.74 | 0.63 / 0.91 | 0.61 / 0.61 | 0.06 / 0.40 | 0.120 / 0.190 | 0.003 / 0.56 |
+| 5 | 0.72 / 0.79 | 0.65 / 0.47 | 0.60 / 0.63 | 0.06 / 0.15 | 0.143 / 0.135 | 0.000 / 0.57 |
+| 8 | 0.70 / 0.77 | 0.75 / 0.51 | 0.59 / 0.64 | 0.02 / 0.11 | 0.106 / 0.108 | 0.000 / 0.51 |
+| 12 | 0.69 / 0.76 | 0.80 / 0.62 | **0.50** / 0.65 | **0.00** / 0.04 | 0.095 / 0.084 | 0.000 / 0.34 |
+
+- EM's γ are deterministic (H_γ ≈ 0, all γ near 0 or 1).
+- Too many factors (k = 12) let EM absorb every change into the loadings,
+  so it calls no shocks (AUROC 0.50).
+- Too few factors (k = 2) make MCMC unstable: it flags almost every
+  continuation in two of the five trajectories.
+- Precision recovery is robust to k for both methods. MCMC is best at the
+  true rank.
+
+### Experiments III and IV (p = 10, T = 80, k = 3)
+
+| exit mechanism | method | exit rate | RV | RV off-diag. | q | block RV, marginal | Δ bias (truth 0.2) | RV off-diag., far from boundary |
+|---|---|---|---|---|---|---|---|---|
+| history (III) | EM | 0.094 | 0.82 | 0.69 | 0.68 | 0.73 | −0.001 | 0.65 |
+| history (III) | MCMC | 0.094 | 0.84 | 0.71 | 0.86 | 0.79 | +0.013 | 0.67 |
+| stochastic | EM | 0.104 | 0.81 | 0.67 | 0.72 | 0.82 | +0.005 | 0.63 |
+| stochastic | MCMC | 0.104 | 0.83 | 0.68 | 1.01 | 0.88 | +0.024 | 0.65 |
+| contemporaneous | EM | 0.095 | **0.66** | **0.40** | 0.47 | 0.71 | **+0.052** | **0.38** |
+| contemporaneous | MCMC | 0.095 | **0.69** | **0.42** | 0.67 | 0.76 | **+0.071** | **0.42** |
+
+The results agree with Lemma (sequential ignorability) and (F1):
+
+- At the same exit rate, both history-dependent mechanisms recover Ω about
+  as well as each other, with no bias in Δ̂.
+- Contemporaneous selection lowers the off-diagonal RV from about 0.68 to
+  about 0.41 and biases Δ̂ upward by 26–36%.
+- The damage is not confined to the selected coordinates: variables far
+  from the selection boundary lose as much.
 
 ## Evaluation metrics
 
