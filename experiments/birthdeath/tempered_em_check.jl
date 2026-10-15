@@ -27,20 +27,30 @@ const TEMPER_SPIKE = get(ENV, "TEMPERED_EM_SPIKE", "0") == "1"
 # Set TEMPERED_EM_LIKELIHOOD=0 to leave the likelihood untempered, so that the
 # temperatures only set each replica's spike scale.
 const TEMPER_LIKELIHOOD = get(ENV, "TEMPERED_EM_LIKELIHOOD", "1") == "1"
-# Set TEMPERED_EM_INIT=alternating to start the EM fit from alternating shock
-# indicators (s_jt = 1 at even t, 0 at odd t) instead of binary splitting.
+# Set TEMPERED_EM_INIT to start the EM fit from fixed shock indicators instead
+# of binary splitting: alternating (s_jt = 1 at even t, 0 at odd t) or
+# checkerboard (s_jt = 1 when (t - 1 + j) mod TEMPERED_EM_PERIOD == 0, so each
+# variable has a sparse pattern shifted with respect to the others).
 const INIT = get(ENV, "TEMPERED_EM_INIT", "splitting")
+const PERIOD = parse(Int, get(ENV, "TEMPERED_EM_PERIOD", "4"))
+
+function initial_indicators(init, p, T)
+    init == "alternating" && return [iseven(t) ? 1.0 : 0.0 for j in 1:p, t in 1:T]
+    init == "checkerboard" &&
+        return [mod(t - 1 + j, PERIOD) == 0 ? 1.0 : 0.0 for j in 1:p, t in 1:T]
+    error("unknown TEMPERED_EM_INIT $init")
+end
 # Set TEMPERED_EM_LEVELS=1 to add one output row per temperature level.
 const REPORT_LEVELS = get(ENV, "TEMPERED_EM_LEVELS", "0") == "1"
 
 function tempered_em_one(p, k, seed; tau_active, minimum_active)
     sim = simulate_experiment2(p, k, seed; minimum_active=minimum_active)
-    fit = if INIT == "alternating"
+    fit = if INIT != "splitting"
         T_, p_ = size(sim.alive)
-        alternating = [iseven(t) ? 1.0 : 0.0 for j in 1:p_, t in 1:T_]
         fit_experiment2(
             sim, k, seed;
-            tau_active=tau_active, changepoint_init=false, gamma_init=alternating
+            tau_active=tau_active, changepoint_init=false,
+            gamma_init=initial_indicators(INIT, p_, T_)
         )
     else
         fit_experiment2(sim, k, seed; tau_active=tau_active)
@@ -67,7 +77,7 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
     base = (p=p, k=k, seed=seed, tau_active=tau_active,
             minimum_active=minimum_active, exchange=string(EXCHANGE),
             temper_spike=TEMPER_SPIKE, temper_likelihood=TEMPER_LIKELIHOOD,
-            init=INIT)
+            init=INIT == "checkerboard" ? "checkerboard$(PERIOD)" : INIT)
     rows = [
         merge(
             base, (method="em",),
