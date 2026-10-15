@@ -339,6 +339,27 @@ In every trajectory some replica keeps a few shocks with high precision
 (0.5–1.0, recall 0.03–0.08), but its log posterior is lower than that of the
 replica without shocks (by 0–30), so the selection discards it.
 
+### Recalibrated EM: fixed shock probability and wider spike
+
+`tempered_em_check.jl` with `TEMPERED_EM_FIXED_PI=0.1`,
+`TEMPERED_EM_TAU_INACTIVE=0.3` and likelihood-only tempering (forced
+exchanges) fixes π = 0.1 and sets τ_i = 0.3 in both the EM fit and the
+tempered replicas. Five trajectories, in
+`results/experiment2/tempered_em_calibrated_pi010_tau030_p10_k2_tau150_min6.csv`:
+
+| | AUROC | recall | mean γ, shocks / non-shocks | off-diagonal RV | RV |
+|---|---|---|---|---|---|
+| EM, π learned, τ_i = 0.075 | 0.585 | 0.090 | 0.091 / 0.071 | 0.739 | 0.817 |
+| EM, π = 0.1, τ_i = 0.3 | 0.610 | 0.000 | 0.005 / 0.007 | 0.822 | 0.869 |
+| tempered EM, π = 0.1, τ_i = 0.3 | 0.616 | 0.000 | 0.005 / 0.005 | 0.824 | 0.869 |
+
+With π fixed, every shock probability sits at about 0.005. That is the
+E-step value for a loading change estimated at zero: logit γ = logit π −
+k log(τ_a / τ_i) ≈ −5.4. The point estimates of the loading changes stay near
+zero for true shocks too, so the E-step, which judges shocks from those point
+estimates, cannot detect them. The precision matrices are recovered better
+than by the default fit.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
