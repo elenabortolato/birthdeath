@@ -322,6 +322,23 @@ clearly improving detection. With greedy exchanges no exchange is ever accepted,
 the replicas reduce to independent EM runs at different temperatures, and the
 best state always comes from the hottest one.
 
+### Shock-crossover EM
+
+`crossover_check.jl` runs `shock_crossover_EM`: nine untempered EM replicas
+start from different checkerboard shock patterns (period 4, offsets 0–3;
+period 5, offsets 0–4) and every 5 iterations exchange, in random pairs, the
+loading path of one variable after a Procrustes alignment. There are five
+trajectories, in `results/experiment2/crossover_p10_k2_tau150_min6.csv`.
+
+| | AUROC | recall | precision | mean γ, shocks / non-shocks | off-diagonal RV | log posterior |
+|---|---|---|---|---|---|---|
+| EM | 0.585 | 0.090 | 0.108 | 0.091 / 0.071 | 0.739 | 527 |
+| crossover (best replica) | 0.599 | 0.006 | 0.333 | 0.006 / 0.001 | 0.762 | 695 |
+
+In every trajectory some replica keeps a few shocks with high precision
+(0.5–1.0, recall 0.03–0.08), but its log posterior is lower than that of the
+replica without shocks (by 0–30), so the selection discards it.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
