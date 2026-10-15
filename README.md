@@ -182,6 +182,31 @@ the oracle's, the median over trajectories, while calling almost no shocks.
 The MAP objective therefore favours solutions without shocks over the true
 ones, and better optimization alone makes detection worse rather than better.
 
+### MCMC
+
+`mcmc_check.jl` runs `MCMC_time_varying` (Metropolis-within-Gibbs, with 2000
+burn-in and 3000 sampling sweeps) on the k = 2 trajectories of the strategy
+comparison. Each trajectory has two chains, one started from the EM fit and
+one from the truth. The CSV is
+`results/experiment2/mcmc_p10_k2_tau150_min6.csv`.
+
+| | EM | MCMC from EM fit | MCMC from truth |
+|---|---|---|---|
+| shock AUROC | 0.59 ± 0.06 | 0.64 ± 0.06 | 0.68 ± 0.07 |
+| recall / precision at γ > 0.5 | 0.10 / 0.10 | 0.12 / 0.27 | 0.19 / 0.44 |
+| mean γ, true shocks / non-shocks | 0.10 / 0.09 | 0.22 / 0.11 | 0.25 / 0.08 |
+| RV, full matrix | 0.83 | 0.89 | 0.91 |
+| RV, off-diagonal | 0.78 | 0.85 | 0.87 |
+
+- The posterior mean improves precision recovery over the EM point estimate,
+  with off-diagonal RV 0.85 against 0.78.
+- Shock detection improves but stays weak. The posterior mass separates
+  shocks from non-shocks only modestly at this signal level.
+- The two chains agree to within 0.05 in AUROC in 12 of 20 trajectories, with
+  a median difference of 0.04. The chain started from the truth does slightly
+  better, so mixing is incomplete; the flip move is accepted about 2–3% of
+  the time.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
