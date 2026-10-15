@@ -3090,7 +3090,12 @@ with `:always` every proposed exchange is made. With `:rank` the replicas are
 instead ranked by untempered log posterior at every exchange step and the
 temperatures reassigned in that order, the best-fitting replica at betas[1];
 the reported exchange rate for level i is then the fraction of steps at which
-its replica changed. Replicas at low temperature
+its replica changed. `pairing` chooses which levels propose exchanges:
+`:neighbours` (default) pairs adjacent levels, alternating even and odd pairs;
+`:random` pairs the levels at random, so a replica can jump between very
+different temperatures; `:distant` pairs level i with level n + 1 - i, the
+coldest with the hottest. For the last two the exchange rate of level i
+counts the exchanges proposed with i as the colder level. Replicas at low temperature
 move between shock configurations more easily, and exchanges bring their
 states to beta = 1.
 
@@ -3130,6 +3135,7 @@ function parallel_tempered_EM(
     betas::Vector{Float64}=collect(0.2 .^ ((0:8) ./ 8)),
     swap_interval::Int=5,
     exchange::Symbol=:metropolis,
+    pairing::Symbol=:neighbours,
     temper_spike::Bool=false,
     temper_likelihood::Bool=true,
     estimate_coefficients::Bool=true,
@@ -3150,6 +3156,8 @@ function parallel_tempered_EM(
 )
     exchange in (:metropolis, :greedy, :always, :rank) ||
         throw(ArgumentError("exchange must be :metropolis, :greedy, :always or :rank"))
+    pairing in (:neighbours, :random, :distant) ||
+        throw(ArgumentError("pairing must be :neighbours, :random or :distant"))
     alive = BitMatrix(alive_input)
     births, deaths = birth_death_counts(alive)
     birth_x = Float64.(births)
@@ -3222,9 +3230,17 @@ function parallel_tempered_EM(
             end
             visited_beta_one[at_level[1]] = true
         elseif iter % swap_interval == 0
-            first_pair = isodd(div(iter, swap_interval)) ? 1 : 2
-            for i in first_pair:2:(n - 1)
-                a, b = replicas[at_level[i]], replicas[at_level[i + 1]]
+            pairs = if pairing == :neighbours
+                first_pair = isodd(div(iter, swap_interval)) ? 1 : 2
+                [(i, i + 1) for i in first_pair:2:(n - 1)]
+            elseif pairing == :random
+                order = Random.shuffle(rng, 1:n)
+                [minmax(order[2m - 1], order[2m]) for m in 1:div(n, 2)]
+            else
+                [(i, n + 1 - i) for i in 1:div(n, 2)]
+            end
+            for (i, j) in pairs
+                a, b = replicas[at_level[i]], replicas[at_level[j]]
                 log_ratio = (a.beta - b.beta) *
                     (sum(b.state.logliks) - sum(a.state.logliks))
                 swap_tries[i] += 1
@@ -3232,7 +3248,7 @@ function parallel_tempered_EM(
                          exchange == :greedy ? log_ratio > 0 : true
                 if accept
                     a.beta, b.beta = b.beta, a.beta
-                    at_level[i], at_level[i + 1] = at_level[i + 1], at_level[i]
+                    at_level[i], at_level[j] = at_level[j], at_level[i]
                     swap_accept[i] += 1
                 end
             end

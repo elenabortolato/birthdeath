@@ -18,12 +18,16 @@
 #
 # MCMC_BURNIN and MCMC_SAMPLES set the number of sweeps (default 1000, 2000).
 # RESET_SKIP_PT=1 skips the parallel-tempering sampler (EM and tempered EM only).
+# RESET_EXCHANGE (metropolis, greedy, always, rank) and RESET_PAIRING
+# (neighbours, random, distant) set the exchange rule of tempered EM.
 #
 
 include(joinpath(@__DIR__, "mcmc_check.jl"))
 
 const BETAS = collect(0.2 .^ ((0:8) ./ 8))
 const SKIP_PT = get(ENV, "RESET_SKIP_PT", "0") == "1"
+const EXCHANGE = Symbol(get(ENV, "RESET_EXCHANGE", "metropolis"))
+const PAIRING = Symbol(get(ENV, "RESET_PAIRING", "neighbours"))
 
 function reset_tempering_one(p, k, seed; tau_active, minimum_active)
     settings = (
@@ -55,11 +59,13 @@ function reset_tempering_one(p, k, seed; tau_active, minimum_active)
             sim.Y, sim.alive, k;
             from_em..., settings..., betas=BETAS,
             coefficient_damping=COEFFICIENT_DAMPING,
+            exchange=EXCHANGE, pairing=PAIRING,
             rng=MersenneTwister(70_000 + seed)
         )
 
         base = (p=p, k=k, seed=seed, tau_active=tau_active,
-                minimum_active=minimum_active, data=string(data), model="reset")
+                minimum_active=minimum_active, data=string(data), model="reset",
+                exchange=string(EXCHANGE), pairing=string(PAIRING))
         none = (logposterior=NaN, flip_acceptance=NaN, swap_acceptance_min=NaN,
                 chosen_beta=NaN)
         push!(rows, merge(
