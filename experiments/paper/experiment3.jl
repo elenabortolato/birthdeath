@@ -26,8 +26,8 @@
 # five variables over at least ten time points, relaxed when no such block
 # exists) against both the principal block and the marginal precision of the
 # block variables. For Experiment IV the bias of Delta-hat and the recovery
-# among variables that never come near the selection boundary (never exit,
-# and z > c + 0.5 at every active time) are also reported.
+# among variables far from the selection boundary are also reported: at each
+# t, the principal block of the active variables with z_tj > c + 1.
 #
 # Usage (from the repository root):
 #
@@ -43,7 +43,7 @@ const T_EXP3 = 80
 const K_EXP3 = 3
 const THRESHOLD = -1.25
 const STOCHASTIC_BETA = -2.0
-const SAFE_MARGIN = 0.5
+const SAFE_MARGIN = 1.0
 
 logistic(x) = 1 / (1 + exp(-x))
 
@@ -161,15 +161,11 @@ function simulate_endogenous(seed; mechanism)
     )
 end
 
-"""Variables that never exit and whose z stays above c + SAFE_MARGIN."""
-function safe_variables(sim)
-    T_, p = size(sim.alive)
-    return [
-        j for j in 1:p
-        if all(t -> !(sim.alive[t - 1, j] && !sim.alive[t, j]), 2:T_) &&
-           all(t -> !sim.alive[t, j] || sim.z[t, j] > THRESHOLD + SAFE_MARGIN, 1:T_)
-    ]
-end
+"""Active variables at t whose standardized value is above c + SAFE_MARGIN."""
+safe_at(sim, t) = [
+    j for j in 1:size(sim.alive, 2)
+    if sim.alive[t, j] && sim.z[t, j] > THRESHOLD + SAFE_MARGIN
+]
 
 function experiment3_one(seed; mechanism)
     sim = simulate_endogenous(seed; mechanism=mechanism)
@@ -177,17 +173,14 @@ function experiment3_one(seed; mechanism)
     Omega_true = [L * L' + Diagonal(sim.Delta) for L in sim.Lambda]
     fits = fit_birthdeath(sim.Y, sim.alive, k, seed; tau_active=0.75)
     block = adaptive_block(sim.alive; min_vars=5, min_length=10)
-    safe = safe_variables(sim)
     ever_active = [j for j in 1:size(sim.alive, 2) if any(view(sim.alive, :, j))]
     prefixed(prefix, nt) = NamedTuple{Tuple(Symbol(prefix, key) for key in keys(nt))}(values(nt))
 
     rows = NamedTuple[]
     for (method, fit) in fits
         safe_metrics = average_metrics(
-            t -> Omega_true[t][intersect(safe, findall(view(sim.alive, t, :))),
-                               intersect(safe, findall(view(sim.alive, t, :)))],
-            t -> fit.Omega[t][intersect(safe, findall(view(sim.alive, t, :))),
-                              intersect(safe, findall(view(sim.alive, t, :)))],
+            t -> Omega_true[t][safe_at(sim, t), safe_at(sim, t)],
+            t -> fit.Omega[t][safe_at(sim, t), safe_at(sim, t)],
             1:size(sim.alive, 1); min_size=2
         )
         push!(rows, merge(
@@ -200,7 +193,7 @@ function experiment3_one(seed; mechanism)
             prefixed("blockmarg_", block_metrics(Omega_true, fit.Omega, sim.alive, block; marginal=true)),
             block_summary(block),
             prefixed("safe_", safe_metrics),
-            (n_safe=length(safe),
+            (mean_safe=mean(length(safe_at(sim, t)) for t in 1:size(sim.alive, 1)),
              delta_bias=mean(fit.Delta[ever_active] .- sim.Delta[ever_active]),
              delta_relative_bias=mean(fit.Delta[ever_active] ./ sim.Delta[ever_active] .- 1)),
             shock_metrics_paper(fit.gamma, sim.s_true, sim.alive),

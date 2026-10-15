@@ -32,7 +32,7 @@ function experiment2_one(p, seed; k_fit, variant)
     fits = fit_birthdeath(sim.Y, sim.alive, k_fit, seed;
                           tau_active=0.75, fixed_event_effects=variant == "ablation")
     block = longest_block(sim.alive; min_vars=5)
-    births, deaths = birth_death_counts(sim.alive)
+    births, deaths = BGM.birth_death_counts(sim.alive)
     event_times = [t for t in 2:size(sim.alive, 1) if births[t] + deaths[t] > 0]
     nonevent_times = [t for t in 2:size(sim.alive, 1) if births[t] + deaths[t] == 0]
 
