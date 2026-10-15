@@ -2815,6 +2815,7 @@ function tempered_em_step!(
         likelihood_temperature=likelihood_temperature,
         rng=rng
     )
+    get(settings, :estimate_coefficients, true) || return replica
     update = update_shock_coefficients!(
         copy(replica.coefficients), gamma, replica.state.alive, birth_x, death_x;
         prior_mean=settings.coefficient_prior_mean,
@@ -2883,7 +2884,9 @@ replica at temperature beta uses an inactive scale that grows geometrically in
 log beta from `sigma_inactive` at beta = 1 to `sigma_inactive_hot` (NaN, the
 default, means `sigma_active`) at the lowest beta, so at high temperature a zero loading
 change no longer has a large prior-density advantage. Scoring and the final
-refinement use the untempered model. With `temper_likelihood = false` only
+refinement use the untempered model. With `estimate_coefficients = false`
+the shock-probability coefficients stay at `coefficients_init` throughout.
+With `temper_likelihood = false` only
 the spike is tempered: every replica uses the untempered likelihood, and the
 temperatures serve only to set each replica's spike scale (use the `:always`
 or `:rank` exchange rules, since the Metropolis and greedy ratios assume a
@@ -2909,6 +2912,7 @@ function parallel_tempered_EM(
     exchange::Symbol=:metropolis,
     temper_spike::Bool=false,
     temper_likelihood::Bool=true,
+    estimate_coefficients::Bool=true,
     sigma_inactive_hot::Float64=NaN,
     n_tempered::Int=200,
     n_polish::Int=500,
@@ -2934,7 +2938,8 @@ function parallel_tempered_EM(
         sigma_inactive=sigma_inactive, a_delta=a_delta, b_delta=b_delta,
         coefficient_prior_mean=coefficient_prior_mean,
         coefficient_prior_sd=coefficient_prior_sd,
-        coefficient_damping=coefficient_damping
+        coefficient_damping=coefficient_damping,
+        estimate_coefficients=estimate_coefficients
     )
     replicas = [
         EMReplica(

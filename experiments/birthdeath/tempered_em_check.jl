@@ -40,6 +40,27 @@ function initial_indicators(init, p, T)
         return [mod(t - 1 + j, PERIOD) == 0 ? 1.0 : 0.0 for j in 1:p, t in 1:T]
     error("unknown TEMPERED_EM_INIT $init")
 end
+# TEMPERED_EM_TAU_INACTIVE sets the inactive (spike) scale tau_i of every fit
+# (default 0.075). TEMPERED_EM_FIXED_PI, if set, fixes the shock probability
+# at that value (a0 = logit(pi), a_b = a_d = 0) in every fit instead of
+# estimating it.
+const TAU_I = parse(Float64, get(ENV, "TEMPERED_EM_TAU_INACTIVE", string(TAU_INACTIVE)))
+const FIXED_PI = get(ENV, "TEMPERED_EM_FIXED_PI", "")
+"""Keyword overrides for fit_experiment2 implementing TAU_I and FIXED_PI."""
+function calibration_overrides(k)
+    overrides = (
+        sigma_inactive=TAU_I / sqrt(k),
+        sigma_inactive_start=TAU_I / sqrt(k)
+    )
+    isempty(FIXED_PI) && return overrides
+    pi_fixed = parse(Float64, FIXED_PI)
+    return merge(overrides, (
+        estimate_shock_coefficients=false,
+        a0_init=log(pi_fixed / (1 - pi_fixed)),
+        a_birth_init=0.0,
+        a_death_init=0.0
+    ))
+end
 # Set TEMPERED_EM_LEVELS=1 to add one output row per temperature level.
 const REPORT_LEVELS = get(ENV, "TEMPERED_EM_LEVELS", "0") == "1"
 
@@ -50,10 +71,11 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
         fit_experiment2(
             sim, k, seed;
             tau_active=tau_active, changepoint_init=false,
-            gamma_init=initial_indicators(INIT, p_, T_)
+            gamma_init=initial_indicators(INIT, p_, T_),
+            calibration_overrides(k)...
         )
     else
-        fit_experiment2(sim, k, seed; tau_active=tau_active)
+        fit_experiment2(sim, k, seed; tau_active=tau_active, calibration_overrides(k)...)
     end
     tempered = parallel_tempered_EM(
         sim.Y, sim.alive, k;
@@ -62,12 +84,13 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
         coefficients_init=copy(fit.coefficient_vector),
         sigma_initial=TAU0 / sqrt(k),
         sigma_active=tau_active / sqrt(k),
-        sigma_inactive=TAU_INACTIVE / sqrt(k),
+        sigma_inactive=TAU_I / sqrt(k),
         a_delta=A_DELTA,
         b_delta=B_DELTA,
         coefficient_prior_mean=COEFFICIENT_PRIOR_MEAN,
         coefficient_prior_sd=COEFFICIENT_PRIOR_SD,
         coefficient_damping=COEFFICIENT_DAMPING,
+        estimate_coefficients=isempty(FIXED_PI),
         exchange=EXCHANGE,
         temper_spike=TEMPER_SPIKE,
         temper_likelihood=TEMPER_LIKELIHOOD,
@@ -77,7 +100,8 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
     base = (p=p, k=k, seed=seed, tau_active=tau_active,
             minimum_active=minimum_active, exchange=string(EXCHANGE),
             temper_spike=TEMPER_SPIKE, temper_likelihood=TEMPER_LIKELIHOOD,
-            init=INIT == "checkerboard" ? "checkerboard$(PERIOD)" : INIT)
+            init=INIT == "checkerboard" ? "checkerboard$(PERIOD)" : INIT,
+            tau_inactive=TAU_I, fixed_pi=isempty(FIXED_PI) ? NaN : parse(Float64, FIXED_PI))
     rows = [
         merge(
             base, (method="em",),
