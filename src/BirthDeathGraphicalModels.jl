@@ -2778,7 +2778,8 @@ damped update of the shock coefficients, as in `EM_time_varying`.
 """
 function tempered_em_step!(
     replica::EMReplica, settings, birth_x, death_x, rng;
-    sigma_inactive::Float64=settings.sigma_inactive
+    sigma_inactive::Float64=settings.sigma_inactive,
+    likelihood_temperature::Float64=replica.beta
 )
     gamma = E_step_independent_advanced(
         replica.state, replica.pi_time;
@@ -2792,7 +2793,7 @@ function tempered_em_step!(
         sigma_initial=settings.sigma_initial,
         sigma_active=settings.sigma_active,
         sigma_inactive=sigma_inactive,
-        likelihood_temperature=replica.beta
+        likelihood_temperature=likelihood_temperature
     )
     update_DiffLambda_hess!(
         replica.state, gamma;
@@ -2800,7 +2801,7 @@ function tempered_em_step!(
         sigma_initial=settings.sigma_initial,
         sigma_active=settings.sigma_active,
         sigma_inactive=sigma_inactive,
-        likelihood_temperature=replica.beta,
+        likelihood_temperature=likelihood_temperature,
         rng=rng
     )
     update = update_shock_coefficients!(
@@ -2871,7 +2872,14 @@ replica at temperature beta uses an inactive scale that grows geometrically in
 log beta from `sigma_inactive` at beta = 1 to `sigma_inactive_hot` (NaN, the
 default, means `sigma_active`) at the lowest beta, so at high temperature a zero loading
 change no longer has a large prior-density advantage. Scoring and the final
-refinement use the untempered model.
+refinement use the untempered model. With `temper_likelihood = false` only
+the spike is tempered: every replica uses the untempered likelihood, and the
+temperatures serve only to set each replica's spike scale (use the `:always`
+or `:rank` exchange rules, since the Metropolis and greedy ratios assume a
+tempered likelihood). The result also gives, for each level, the spike scale
+and the shock probabilities, loadings and Delta of the replica there at the
+end of the tempered phase (`level_sigma_inactive`, `level_gamma`,
+`level_Lambda`, `level_Delta`).
 
 This is a search for a higher mode of the posterior; it is not a sampler.
 Shock probabilities use the birth and death counts at each time. Start Julia
@@ -2889,6 +2897,7 @@ function parallel_tempered_EM(
     swap_interval::Int=5,
     exchange::Symbol=:metropolis,
     temper_spike::Bool=false,
+    temper_likelihood::Bool=true,
     sigma_inactive_hot::Float64=NaN,
     n_tempered::Int=200,
     n_polish::Int=500,
@@ -2953,7 +2962,8 @@ function parallel_tempered_EM(
         Threads.@threads for r in 1:n
             tempered_em_step!(
                 replicas[r], settings, birth_x, death_x, replica_rngs[r];
-                sigma_inactive=spike_scale(replicas[r].beta)
+                sigma_inactive=spike_scale(replicas[r].beta),
+                likelihood_temperature=temper_likelihood ? replicas[r].beta : 1.0
             )
         end
         if iter % swap_interval == 0 && exchange == :rank
@@ -2992,6 +3002,22 @@ function parallel_tempered_EM(
         end
     end
 
+    # Shock probabilities of the replica at each level, under that level's
+    # spike scale, before the final refinement.
+    level_sigma_inactive = [spike_scale(beta) for beta in betas]
+    level_gamma = Vector{Matrix{Float64}}(undef, n)
+    level_Lambda = Vector{Vector{Matrix{Float64}}}(undef, n)
+    level_Delta = Vector{Vector{Float64}}(undef, n)
+    for (level, r) in enumerate(at_level)
+        level_gamma[level] = E_step_independent_advanced(
+            replicas[r].state, replicas[r].pi_time;
+            sigma_active=sigma_active,
+            sigma_inactive=level_sigma_inactive[level]
+        )
+        level_Lambda[level] = [copy(L) for L in replicas[r].state.Lambda]
+        level_Delta[level] = copy(replicas[r].state.Delta)
+    end
+
     # Keep the replica with the highest untempered log posterior.
     scores = Vector{Float64}(undef, n)
     Threads.@threads for r in 1:n
@@ -3023,6 +3049,10 @@ function parallel_tempered_EM(
         chosen_beta=chosen_beta,
         replica_logposteriors=scores,
         replicas_visiting_beta_one=count(visited_beta_one),
+        level_sigma_inactive=level_sigma_inactive,
+        level_gamma=level_gamma,
+        level_Lambda=level_Lambda,
+        level_Delta=level_Delta,
         polish_iterations=polish_iterations,
         swap_acceptance=swap_accept ./ max.(swap_tries, 1)
     )

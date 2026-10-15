@@ -24,6 +24,11 @@ include(joinpath(@__DIR__, "mcmc_check.jl"))
 const EXCHANGE = Symbol(get(ENV, "TEMPERED_EM_EXCHANGE", "metropolis"))
 # Set TEMPERED_EM_SPIKE=1 to temper the inactive (spike) scale as well.
 const TEMPER_SPIKE = get(ENV, "TEMPERED_EM_SPIKE", "0") == "1"
+# Set TEMPERED_EM_LIKELIHOOD=0 to leave the likelihood untempered, so that the
+# temperatures only set each replica's spike scale.
+const TEMPER_LIKELIHOOD = get(ENV, "TEMPERED_EM_LIKELIHOOD", "1") == "1"
+# Set TEMPERED_EM_LEVELS=1 to add one output row per temperature level.
+const REPORT_LEVELS = get(ENV, "TEMPERED_EM_LEVELS", "0") == "1"
 
 function tempered_em_one(p, k, seed; tau_active, minimum_active)
     sim = simulate_experiment2(p, k, seed; minimum_active=minimum_active)
@@ -43,13 +48,14 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
         coefficient_damping=COEFFICIENT_DAMPING,
         exchange=EXCHANGE,
         temper_spike=TEMPER_SPIKE,
+        temper_likelihood=TEMPER_LIKELIHOOD,
         rng=MersenneTwister(70_000 + seed)
     )
 
     base = (p=p, k=k, seed=seed, tau_active=tau_active,
             minimum_active=minimum_active, exchange=string(EXCHANGE),
-            temper_spike=TEMPER_SPIKE)
-    return [
+            temper_spike=TEMPER_SPIKE, temper_likelihood=TEMPER_LIKELIHOOD)
+    rows = [
         merge(
             base, (method="em",),
             shock_metrics(sim, fit.gamma),
@@ -67,6 +73,21 @@ function tempered_em_one(p, k, seed; tau_active, minimum_active)
              replicas_visiting_beta_one=tempered.replicas_visiting_beta_one)
         )
     ]
+    if REPORT_LEVELS
+        for (level, gamma) in enumerate(tempered.level_gamma)
+            push!(rows, merge(
+                base,
+                (method=@sprintf("level%d_tau_i=%.3f", level,
+                    tempered.level_sigma_inactive[level] * sqrt(k)),),
+                shock_metrics(sim, gamma),
+                precision_metrics(sim, [L * L' + Diagonal(tempered.level_Delta[level])
+                                        for L in tempered.level_Lambda[level]]),
+                (logposterior=NaN, chosen_beta=NaN, swap_acceptance_min=NaN,
+                 replicas_visiting_beta_one=0)
+            ))
+        end
+    end
+    return rows
 end
 
 function tempered_em_main()
@@ -81,7 +102,7 @@ function tempered_em_main()
             tau_active=options.tau_active,
             minimum_active=options.minimum_active
         )
-        em, tempered = rows
+        em, tempered = rows[1], rows[2]
         @printf(
             "p=%d k=%d seed=%d  AUROC em=%.3f tempered=%.3f  recall em=%.2f tempered=%.2f  logpost gain=%.1f  chosen beta=%.2f  min swap=%.2f  (%.0fs)\n",
             options.p, options.k, seed, em.auroc, tempered.auroc, em.recall,
