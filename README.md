@@ -504,7 +504,7 @@ run per setting, as in the paper, and each trajectory is fitted twice:
 
 CSVs are in `results/paper/`. Running
 `python3 experiments/paper/summarize.py results/paper` prints every table,
-as mean (SD) across trajectories. The p = 50 runs are still in progress.
+as mean (SD) across trajectories. Experiment I at p = 50 is still in progress.
 
 | Script | Experiment |
 |---|---|
@@ -551,6 +551,22 @@ Design choices not fixed by the paper:
 - EM underestimates the scale of Ω by half (q = 0.52), which accounts for
   most of its RFE. MCMC gets the scale right and is better on every
   precision metric.
+
+### Experiment II, p = 50 (k_true = k_fit = 5)
+
+| | RV | RFE | q | RV off-diag. | block RV | AUROC | precision / recall |
+|---|---|---|---|---|---|---|---|
+| EM | 0.46 (0.03) | 0.92 | **0.29** | 0.36 | 0.52 | 0.54 | 0.11 / 0.01 |
+| MCMC | 0.46 (0.04) | 0.92 | 0.33 | 0.36 | 0.52 | 0.60 | 0.39 / 0.06 |
+
+- Both methods fall well below the paper's p = 50 values: RV 0.69 on the
+  full active sets and 0.71 on the block.
+- Both shrink Ω to about a third of its true norm (q ≈ 0.3). With one
+  observation per time and about 35 active variables, the scale is poorly
+  identified.
+- At 500 + 1000 sweeps, MCMC barely moves from the EM fit at this dimension.
+- This gap with the paper still needs to be explained. Candidate causes are
+  the corrected generator and the fitting settings used for the paper.
 
 ### Ablation of the event-informed shock probability, p = 10
 
