@@ -565,8 +565,14 @@ Design choices not fixed by the paper:
   observation per time and about 35 active variables, the scale is poorly
   identified.
 - At 500 + 1000 sweeps, MCMC barely moves from the EM fit at this dimension.
-- This gap with the paper still needs to be explained. Candidate causes are
-  the corrected generator and the fitting settings used for the paper.
+- The pre-fix generator does not explain the gap. With `LEGACY_GENERATOR=1`,
+  which redraws every loading row at every time point, EM does much worse:
+  - p = 10, five trajectories: RV 0.57, block RV 0.61, off-diagonal RV 0.06;
+  - p = 50, two trajectories: RV 0.16, block RV 0.23.
+
+  The CSVs are `results/paper/legacy_generator_*.csv`. The paper's p = 50
+  values must come from different fitting settings or a different metric
+  computation in the original runs.
 
 ### Ablation of the event-informed shock probability, p = 10
 
