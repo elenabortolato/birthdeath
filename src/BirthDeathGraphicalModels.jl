@@ -2993,10 +2993,12 @@ function tempered_em_step!(
     sigma_inactive::Float64=settings.sigma_inactive,
     likelihood_temperature::Float64=replica.beta
 )
+    shock_center = get(settings, :shock_center, :previous)
     gamma = E_step_independent_advanced(
         replica.state, replica.pi_time;
         sigma_active=settings.sigma_active,
-        sigma_inactive=sigma_inactive
+        sigma_inactive=sigma_inactive,
+        shock_center=shock_center
     )
     update_Delta_bayes!(
         replica.state, gamma, replica.pi_time;
@@ -3007,15 +3009,28 @@ function tempered_em_step!(
         sigma_inactive=sigma_inactive,
         likelihood_temperature=likelihood_temperature
     )
-    update_DiffLambda_hess!(
-        replica.state, gamma;
-        step=1.0, max_jump=1.0,
-        sigma_initial=settings.sigma_initial,
-        sigma_active=settings.sigma_active,
-        sigma_inactive=sigma_inactive,
-        likelihood_temperature=likelihood_temperature,
-        rng=rng
-    )
+    if shock_center == :previous
+        update_DiffLambda_hess!(
+            replica.state, gamma;
+            step=1.0, max_jump=1.0,
+            sigma_initial=settings.sigma_initial,
+            sigma_active=settings.sigma_active,
+            sigma_inactive=sigma_inactive,
+            likelihood_temperature=likelihood_temperature,
+            rng=rng
+        )
+    else
+        update_loading_blocks!(
+            replica.state, gamma;
+            step=1.0, max_jump=1.0,
+            sigma_initial=settings.sigma_initial,
+            sigma_active=settings.sigma_active,
+            sigma_inactive=sigma_inactive,
+            shock_center=shock_center,
+            likelihood_temperature=likelihood_temperature,
+            rng=rng
+        )
+    end
     get(settings, :estimate_coefficients, true) || return replica
     update = update_shock_coefficients!(
         copy(replica.coefficients), gamma, replica.state.alive, birth_x, death_x;
@@ -3038,10 +3053,12 @@ Shock probabilities from an E-step, and the untempered log posterior used by
 `EM_time_varying` for its `final_logposterior`.
 """
 function replica_posterior(replica::EMReplica, settings)
+    shock_center = get(settings, :shock_center, :previous)
     gamma = E_step_independent_advanced(
         replica.state, replica.pi_time;
         sigma_active=settings.sigma_active,
-        sigma_inactive=settings.sigma_inactive
+        sigma_inactive=settings.sigma_inactive,
+        shock_center=shock_center
     )
     value, _ = full_log_posterior(
         replica.state, gamma, replica.pi_time, replica.coefficients;
@@ -3051,7 +3068,8 @@ function replica_posterior(replica::EMReplica, settings)
         a_delta=settings.a_delta,
         b_delta=settings.b_delta,
         coefficient_prior_mean=settings.coefficient_prior_mean,
-        coefficient_prior_sd=settings.coefficient_prior_sd
+        coefficient_prior_sd=settings.coefficient_prior_sd,
+        shock_center=shock_center
     )
     return gamma, value
 end
@@ -3094,7 +3112,8 @@ or `:rank` exchange rules, since the Metropolis and greedy ratios assume a
 tempered likelihood). The result also gives, for each level, the spike scale
 and the shock probabilities, loadings and Delta of the replica there at the
 end of the tempered phase (`level_sigma_inactive`, `level_gamma`,
-`level_Lambda`, `level_Delta`).
+`level_Lambda`, `level_Delta`). `shock_center = :zero` uses the reset prior
+(see `shock_slab_row`) in every replica.
 
 This is a search for a higher mode of the posterior; it is not a sampler.
 Shock probabilities use the birth and death counts at each time. Start Julia
@@ -3114,6 +3133,7 @@ function parallel_tempered_EM(
     temper_spike::Bool=false,
     temper_likelihood::Bool=true,
     estimate_coefficients::Bool=true,
+    shock_center::Symbol=:previous,
     sigma_inactive_hot::Float64=NaN,
     n_tempered::Int=200,
     n_polish::Int=500,
@@ -3140,7 +3160,8 @@ function parallel_tempered_EM(
         coefficient_prior_mean=coefficient_prior_mean,
         coefficient_prior_sd=coefficient_prior_sd,
         coefficient_damping=coefficient_damping,
-        estimate_coefficients=estimate_coefficients
+        estimate_coefficients=estimate_coefficients,
+        shock_center=shock_center
     )
     replicas = [
         EMReplica(
@@ -3229,7 +3250,8 @@ function parallel_tempered_EM(
         level_gamma[level] = E_step_independent_advanced(
             replicas[r].state, replicas[r].pi_time;
             sigma_active=sigma_active,
-            sigma_inactive=level_sigma_inactive[level]
+            sigma_inactive=level_sigma_inactive[level],
+            shock_center=shock_center
         )
         level_Lambda[level] = [copy(L) for L in replicas[r].state.Lambda]
         level_Delta[level] = copy(replicas[r].state.Delta)
