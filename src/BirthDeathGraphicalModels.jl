@@ -75,6 +75,21 @@ end
 # ============================================================================
 
 """
+Apply a shock to a loading row that holds its previous value. A `:jump` adds
+N(0, change_sd^2 I) to it; a `:reset` replaces it by a fresh N(0, change_sd^2 I)
+draw, independent of the previous value. Both use the same random numbers.
+"""
+function apply_true_shock!(row, change_sd, shock_type, rng)
+    draw = change_sd .* randn(rng, length(row))
+    if shock_type == :jump
+        row .+= draw
+    else
+        row .= draw
+    end
+    return row
+end
+
+"""
 Generate one active spell per variable.
 
 `birth_time[j]` is the first active time and `death_time[j]` is the final
@@ -88,6 +103,10 @@ the row changes with a probability set by `shock_rule`:
   variables born and dying at t (see `network_event_covariates_at`;
   `network_link` chooses partial correlations or loading inner products). The
   returned `pi_time` is then a p x T matrix.
+
+`shock_type` sets what a shock does to the row: `:jump` (default) adds an
+N(0, change_sd^2 I) increment to the previous value; `:reset` redraws the row
+from N(0, change_sd^2 I), independently of its previous value.
 
 Inactive entries of `Y` and `Lambda` are stored as zero and must be interpreted
 together with `alive`.
@@ -110,10 +129,13 @@ function generate_birth_death_data(
     network_link::Symbol=:partial_correlation,
     a_birth::Float64=a_event,
     a_death::Float64=a_event,
+    shock_type::Symbol=:jump,
     rng::AbstractRNG=Random.default_rng()
 )
     shock_rule in (:counts, :network) ||
         throw(ArgumentError("shock_rule must be :counts or :network"))
+    shock_type in (:jump, :reset) ||
+        throw(ArgumentError("shock_type must be :jump or :reset"))
     p >= 1 || throw(ArgumentError("p must be positive"))
     k >= 1 || throw(ArgumentError("k must be positive"))
     T >= 1 || throw(ArgumentError("T must be positive"))
@@ -180,7 +202,7 @@ function generate_birth_death_data(
                     probability_max
                 )
                 if rand(rng) < pi_time[j, t]
-                    view(Lambda[t], j, :) .+= change_sd .* randn(rng, k)
+                    apply_true_shock!(view(Lambda[t], j, :), change_sd, shock_type, rng)
                     s_true[j, t] = true
                 end
             end
@@ -199,7 +221,7 @@ function generate_birth_death_data(
                 # A continuing row keeps its previous value unless a shock occurs.
                 view(Lambda[t], j, :) .= view(Lambda[t - 1], j, :)
                 if rand(rng) < pi_time[t]
-                    view(Lambda[t], j, :) .+= change_sd .* randn(rng, k)
+                    apply_true_shock!(view(Lambda[t], j, :), change_sd, shock_type, rng)
                     s_true[j, t] = true
                 end
             end
@@ -824,6 +846,21 @@ end
 # Posterior objectives
 # ============================================================================
 
+"""
+Row on which the shock (slab) density of a continuation (t, j) is evaluated.
+
+`shock_center = :previous` (the paper's model) centres a shock on the previous
+loadings: D_jt = lambda_jt - lambda_{j,t-1} ~ N(0, sigma_active^2 I).
+`shock_center = :zero` makes a shock a reset: lambda_jt ~ N(0, sigma_active^2 I),
+independently of lambda_{j,t-1}, as at a birth. Without a shock both models
+use the spike D_jt ~ N(0, sigma_inactive^2 I).
+"""
+function shock_slab_row(state::TensorPrecisionModel, t::Int, j::Int, shock_center::Symbol)
+    shock_center == :zero && return view(state.Lambda[t], j, :)
+    shock_center == :previous && return view(state.DiffLambda[t], j, :)
+    throw(ArgumentError("shock_center must be :previous or :zero"))
+end
+
 function log_posterior(
     state::TensorPrecisionModel,
     gamma::AbstractMatrix,
@@ -833,7 +870,8 @@ function log_posterior(
     sigma_inactive::Float64=0.01,
     a_delta::Float64=1.0,
     b_delta::Float64=1.0,
-    likelihood_temperature::Float64=1.0
+    likelihood_temperature::Float64=1.0,
+    shock_center::Symbol=:previous
 )
     T = length(state.Lambda)
     p, k = size(state.Lambda[1])
@@ -864,10 +902,11 @@ function log_posterior(
             end
         else
             gamma_jt = clamp(Float64(gamma[j, t]), 1e-12, 1.0 - 1e-12)
+            slab = shock_slab_row(state, t, j, shock_center)
             for h in 1:k
                 delta = state.DiffLambda[t][j, h]
                 active_value = -0.5 * (
-                    delta^2 * inv_active + log(2pi) + 2log(sigma_active)
+                    slab[h]^2 * inv_active + log(2pi) + 2log(sigma_active)
                 )
                 inactive_value = -0.5 * (
                     delta^2 * inv_inactive + log(2pi) + 2log(sigma_inactive)
@@ -934,7 +973,8 @@ function full_log_posterior(
     b_delta::Float64=1.0,
     coefficient_prior_mean::AbstractVector=fill(0.0, 3),
     coefficient_prior_sd::AbstractVector=fill(2.0, 3),
-    likelihood_temperature::Float64=1.0
+    likelihood_temperature::Float64=1.0,
+    shock_center::Symbol=:previous
 )
     lp, logprior = log_posterior(
         state,
@@ -945,7 +985,8 @@ function full_log_posterior(
         sigma_inactive=sigma_inactive,
         a_delta=a_delta,
         b_delta=b_delta,
-        likelihood_temperature=likelihood_temperature
+        likelihood_temperature=likelihood_temperature,
+        shock_center=shock_center
     )
 
     coefficient_prior = shock_coefficient_logprior(
@@ -965,7 +1006,8 @@ function E_step_independent(
     state::TensorPrecisionModel,
     pi_time::AbstractArray;
     sigma_active::Float64=1.0,
-    sigma_inactive::Float64=0.01
+    sigma_inactive::Float64=0.01,
+    shock_center::Symbol=:previous
 )
     T = length(state.DiffLambda)
     p, k = size(state.DiffLambda[1])
@@ -989,7 +1031,8 @@ function E_step_independent(
                 gamma[j, t] = 1.0
             else
                 ss = sum(abs2, view(state.DiffLambda[t], j, :))
-                log_active = log_pi + active_constant - 0.5 * ss * inv_active
+                ss_slab = sum(abs2, shock_slab_row(state, t, j, shock_center))
+                log_active = log_pi + active_constant - 0.5 * ss_slab * inv_active
                 log_inactive =
                     log_one_minus_pi + inactive_constant - 0.5 * ss * inv_inactive
                 gamma[j, t] = exp(
@@ -1020,7 +1063,8 @@ function E_step_independent_advanced(
     gamma_min::Float64=1e-10,
     gamma_max::Float64=1.0 - 1e-10,
     max_iter::Int=60,
-    tol::Float64=1e-10
+    tol::Float64=1e-10,
+    shock_center::Symbol=:previous
 )
     gamma_prior_alpha >= 1.0 ||
         throw(ArgumentError("gamma_prior_alpha must be at least 1"))
@@ -1057,7 +1101,8 @@ function E_step_independent_advanced(
             end
 
             ss = sum(abs2, view(state.DiffLambda[t], j, :))
-            log_active = log_pi + active_constant - 0.5 * ss * inv_active
+            ss_slab = sum(abs2, shock_slab_row(state, t, j, shock_center))
+            log_active = log_pi + active_constant - 0.5 * ss_slab * inv_active
             log_inactive =
                 log_one_minus_pi + inactive_constant - 0.5 * ss * inv_inactive
 
@@ -1473,6 +1518,140 @@ function update_DiffLambda_hess!(
         )
     end
 
+    return state
+end
+
+"""
+Last time of the segment that starts at s: the time before the next
+continuation of row j with gamma > 0.5, or the end of the active spell.
+"""
+function segment_end(gamma::AbstractMatrix, s::Int, j::Int, last_t::Int)
+    u = s
+    while u < last_t && !(gamma[j, u + 1] > 0.5)
+        u += 1
+    end
+    return u
+end
+
+"""Shift lambda_{t,jh} by `increment` for t = s..u, keeping the other increments."""
+function apply_block_increment!(state::TensorPrecisionModel, s, u, last_t, j, h, increment)
+    for t in s:u
+        state.Lambda[t][j, h] += increment
+        refresh_time_cache!(state, t)
+    end
+    state.DiffLambda[s][j, h] += increment
+    u < last_t && (state.DiffLambda[u + 1][j, h] -= increment)
+    return state
+end
+
+"""
+Expected complete-data log posterior terms that a block move on (s..u, j, h)
+can change, and their first and second derivatives in the shift. Constants
+are omitted.
+"""
+function block_objective(
+    state::TensorPrecisionModel, gamma, s, u, last_t, j, h;
+    sigma_initial, sigma_active, sigma_inactive, shock_center, likelihood_temperature
+)
+    value = likelihood_temperature * sum(view(state.logliks, s:u))
+    gradient = 0.0
+    hessian = 0.0
+    for t in s:u
+        g_lik, h_lik = lambda_likelihood_grad_hess(state, t, j, h)
+        gradient += likelihood_temperature * g_lik
+        hessian += likelihood_temperature * h_lik
+    end
+    for t in s:min(u + 1, last_t)
+        d_level = t <= u ? 1.0 : 0.0
+        d_diff = t == s ? 1.0 : t == u + 1 ? -1.0 : 0.0
+        diff = state.DiffLambda[t][j, h]
+        if is_birth(state.alive, t, j)
+            value -= 0.5 * diff^2 / sigma_initial^2
+            gradient -= diff * d_diff / sigma_initial^2
+            hessian -= d_diff^2 / sigma_initial^2
+            continue
+        end
+        g = clamp(Float64(gamma[j, t]), 0.0, 1.0)
+        slab, d_slab = shock_center == :zero ?
+            (state.Lambda[t][j, h], d_level) : (diff, d_diff)
+        value -= 0.5 * (g * slab^2 / sigma_active^2 + (1.0 - g) * diff^2 / sigma_inactive^2)
+        gradient -= g * slab * d_slab / sigma_active^2 + (1.0 - g) * diff * d_diff / sigma_inactive^2
+        hessian -= g * d_slab^2 / sigma_active^2 + (1.0 - g) * d_diff^2 / sigma_inactive^2
+    end
+    return value, gradient, hessian
+end
+
+"""
+Loading M-step by block moves, for either shock centre.
+
+A block move shifts lambda_{t,jh} by the same amount for t = s..u within one
+active spell: it changes D_{s,jh} by +x and D_{u+1,jh} by -x and leaves the
+other increments unchanged. Each coordinate gets two moves: the level move
+(u = s), which changes lambda at a single time, and the segment move, which
+runs to the time before the next continuation with gamma > 0.5, or to the
+end of the spell. Under `shock_center = :zero` a shock cuts the dependence on
+the past, so the segment move shifts one regime as a whole and the level
+move costs a single cache refresh. Each move is a safeguarded Newton step on
+the expected complete-data log posterior, accepted only if that objective
+does not decrease.
+"""
+function update_loading_blocks!(
+    state::TensorPrecisionModel,
+    gamma::AbstractMatrix;
+    step::Float64=1.0,
+    sigma_initial::Float64=1.0,
+    sigma_active::Float64=1.0,
+    sigma_inactive::Float64=0.01,
+    shock_center::Symbol=:previous,
+    max_backtracks::Int=20,
+    min_step::Float64=1e-12,
+    max_jump::Float64=1.0,
+    shuffle_coords::Bool=true,
+    likelihood_temperature::Float64=1.0,
+    rng::AbstractRNG=Random.default_rng()
+)
+    T = length(state.DiffLambda)
+    p, k = size(state.DiffLambda[1])
+    size(gamma) == (p, T) ||
+        throw(DimensionMismatch("gamma must have size ($p,$T)"))
+    settings = (
+        sigma_initial=sigma_initial, sigma_active=sigma_active,
+        sigma_inactive=sigma_inactive, shock_center=shock_center,
+        likelihood_temperature=likelihood_temperature
+    )
+
+    coords = [
+        (s, j, h, block)
+        for s in 1:T for j in 1:p for h in 1:k for block in (:level, :segment)
+        if state.alive[s, j]
+    ]
+    shuffle_coords && Random.shuffle!(rng, coords)
+
+    for (s, j, h, block) in coords
+        last_t = active_spell_end(state.alive, s, j)
+        u = block == :level ? s : segment_end(gamma, s, j, last_t)
+        block == :segment && u == s && continue
+
+        old_value, gradient, hessian =
+            block_objective(state, gamma, s, u, last_t, j, h; settings...)
+        (isfinite(gradient) && abs(gradient) >= 1e-14) || continue
+        direction = isfinite(hessian) && hessian < -1e-10 ? -gradient / hessian : gradient
+        direction = clamp(direction, -max_jump, max_jump)
+
+        local_step = step
+        for _ in 1:max_backtracks
+            increment = local_step * direction
+            apply_block_increment!(state, s, u, last_t, j, h, increment)
+            new_value, _, _ = block_objective(state, gamma, s, u, last_t, j, h; settings...)
+            isfinite(new_value) && new_value >= old_value && break
+            apply_block_increment!(state, s, u, last_t, j, h, -increment)
+            local_step *= 0.5
+            local_step < min_step && break
+        end
+    end
+
+    refresh_all_caches!(state)
+    state.iter += 1
     return state
 end
 
@@ -2169,6 +2348,7 @@ function _EM_time_varying_core(
     standardize_event_counts::Bool=false,
     shock_covariates::Symbol=:counts,
     network_link::Symbol=:partial_correlation,
+    shock_center::Symbol=:previous,
 
     niter::Int=100,
     step_delta::Float64=0.01,
@@ -2438,7 +2618,8 @@ function _EM_time_varying_core(
         a_delta=a_delta,
         b_delta=b_delta,
         coefficient_prior_mean=coefficient_prior_mean,
-        coefficient_prior_sd=coefficient_prior_sd
+        coefficient_prior_sd=coefficient_prior_sd,
+        shock_center=shock_center
     )
 
     push!(logpost_history, initial_objective)
@@ -2483,7 +2664,8 @@ function _EM_time_varying_core(
                 gamma_prior_alpha=gamma_prior_alpha,
                 gamma_prior_beta=gamma_prior_beta,
                 gamma_min=gamma_min,
-                gamma_max=gamma_max
+                gamma_max=gamma_max,
+                shock_center=shock_center
             )
             clamp_continuation_gamma!(gamma)
         end
@@ -2499,7 +2681,8 @@ function _EM_time_varying_core(
             a_delta=a_delta,
             b_delta=b_delta,
             coefficient_prior_mean=coefficient_prior_mean,
-            coefficient_prior_sd=coefficient_prior_sd
+            coefficient_prior_sd=coefficient_prior_sd,
+            shock_center=shock_center
         )
 
         accepted_delta = update_Delta_bayes!(
@@ -2516,21 +2699,36 @@ function _EM_time_varying_core(
             sigma_inactive=sigma_current
         )
 
-        update_DiffLambda_hess!(
-            state,
-            gamma;
-            step=step_lambda,
-            sigma_initial=sigma_initial,
-            sigma_active=sigma_active,
-            sigma_inactive=sigma_current,
-            max_backtracks=20,
-            min_step=1e-12,
-            max_jump=1.0,
-            use_newton=true,
-            shuffle_coords=true,
-            verbose=verbose,
-            rng=rng
-        )
+        if shock_center == :previous
+            update_DiffLambda_hess!(
+                state,
+                gamma;
+                step=step_lambda,
+                sigma_initial=sigma_initial,
+                sigma_active=sigma_active,
+                sigma_inactive=sigma_current,
+                max_backtracks=20,
+                min_step=1e-12,
+                max_jump=1.0,
+                use_newton=true,
+                shuffle_coords=true,
+                verbose=verbose,
+                rng=rng
+            )
+        else
+            # A reset prior ties each level to the regime it starts, so the
+            # loadings are updated by level and segment moves.
+            update_loading_blocks!(
+                state,
+                gamma;
+                step=step_lambda,
+                sigma_initial=sigma_initial,
+                sigma_active=sigma_active,
+                sigma_inactive=sigma_current,
+                shock_center=shock_center,
+                rng=rng
+            )
+        end
 
         coefficient_accepted = false
         coefficient_objective = NaN
@@ -2583,7 +2781,8 @@ function _EM_time_varying_core(
             a_delta=a_delta,
             b_delta=b_delta,
             coefficient_prior_mean=coefficient_prior_mean,
-            coefficient_prior_sd=coefficient_prior_sd
+            coefficient_prior_sd=coefficient_prior_sd,
+            shock_center=shock_center
         )
 
         likelihood_after = objective_after - prior_after
@@ -2656,7 +2855,8 @@ function _EM_time_varying_core(
         gamma_prior_alpha=gamma_prior_alpha,
         gamma_prior_beta=gamma_prior_beta,
         gamma_min=gamma_min,
-        gamma_max=gamma_max
+        gamma_max=gamma_max,
+        shock_center=shock_center
     )
     clamp_continuation_gamma!(gamma_final)
 
@@ -2671,7 +2871,8 @@ function _EM_time_varying_core(
         a_delta=a_delta,
         b_delta=b_delta,
         coefficient_prior_mean=coefficient_prior_mean,
-        coefficient_prior_sd=coefficient_prior_sd
+        coefficient_prior_sd=coefficient_prior_sd,
+        shock_center=shock_center
     )
 
     return (
@@ -3259,11 +3460,12 @@ end
 
 """
 Change in the log likelihood when row j of the loadings moves by `increment`
-over the active spell starting at s. Returns the change and the new per-time
-log likelihoods.
+at times s..last_t (by default the rest of the active spell starting at s).
+Returns the change and the new per-time log likelihoods.
 """
-function row_increment_loglik_change(state, s, j, increment)
-    last_t = active_spell_end(state.alive, s, j)
+function row_increment_loglik_change(
+    state, s, j, increment, last_t=active_spell_end(state.alive, s, j)
+)
     new_values = Vector{Float64}(undef, last_t - s + 1)
     change = 0.0
     for (i, t) in enumerate(s:last_t)
@@ -3278,9 +3480,15 @@ function row_increment_loglik_change(state, s, j, increment)
     return change, new_values
 end
 
-function apply_row_increment!(state, s, j, increment, new_values)
-    last_t = active_spell_end(state.alive, s, j)
+function apply_row_increment!(
+    state, s, j, increment, new_values, last_t=active_spell_end(state.alive, s, j)
+)
     view(state.DiffLambda[s], j, :) .+= increment
+    # A block that stops before the end of the spell leaves later levels as
+    # they were, so the increment after the block absorbs the shift.
+    if last_t < active_spell_end(state.alive, s, j)
+        view(state.DiffLambda[last_t + 1], j, :) .-= increment
+    end
     for (i, t) in enumerate(s:last_t)
         view(state.Lambda[t], j, :) .+= increment
         state.logliks[t] = new_values[i]
@@ -3305,6 +3513,7 @@ struct MCMCSettings
     rows::Vector{Tuple{Int, Int}}
     continuations::Vector{Tuple{Int, Int}}
     estimate_coefficients::Bool
+    shock_center::Symbol
 end
 
 """
@@ -3344,7 +3553,8 @@ function make_tempered_chain(beta, Lambda_init, Delta_init, coefficients_init, Y
     z = falses(p, T)
     for (t, j) in settings.continuations
         d = view(state.DiffLambda[t], j, :)
-        z[j, t] = log(pi_time[t]) + gaussian_row_logdensity(d, settings.sigma_active) >
+        slab = shock_slab_row(state, t, j, settings.shock_center)
+        z[j, t] = log(pi_time[t]) + gaussian_row_logdensity(slab, settings.sigma_active) >
                   log1p(-pi_time[t]) + gaussian_row_logdensity(d, settings.sigma_inactive)
     end
 
@@ -3368,6 +3578,85 @@ function coefficient_logtarget(chain, settings, a)
         sum(abs2, (a .- settings.coefficient_prior_mean) ./ settings.coefficient_prior_sd) / 2
 end
 
+"""
+Loading updates of one sweep under the reset prior (`shock_center = :zero`).
+
+Under this prior a shock at t makes lambda_jt independent of the past, so a
+row's path splits into regimes that start at its birth or at a shock (z = 1).
+Every move at (t, j) shifts lambda_j over the block from t to the end of its
+regime, which leaves all prior terms except the one at t unchanged: the
+increments inside the block are untouched, and the next regime starts with a
+shock whose density only involves its own level. The moves are the exact
+Gibbs update of z_jt, a flip that switches z_jt and draws the row at t from the
+new component's prior (lambda_jt ~ N(0, sigma_active^2 I) for a shock,
+lambda_{j,t-1} + N(0, sigma_inactive^2 I) otherwise), and a random walk in
+the current component.
+"""
+function reset_loading_sweep!(chain::TemperedChain, settings::MCMCSettings, rng::AbstractRNG)
+    state = chain.state
+    alive = state.alive
+    k = size(state.Lambda[1], 2)
+    beta = chain.beta
+
+    for (t, j) in settings.rows
+        spell_end = active_spell_end(alive, t, j)
+        u = t
+        while u < spell_end && !chain.z[j, u + 1]
+            u += 1
+        end
+        level = Vector(view(state.Lambda[t], j, :))
+        d = Vector(view(state.DiffLambda[t], j, :))
+
+        if is_birth(alive, t, j)
+            kind = :birth
+            sigma = settings.sigma_initial
+            position = level
+        else
+            pi_t = chain.pi_time[t]
+            previous = level .- d
+            log_active = log(pi_t) + gaussian_row_logdensity(level, settings.sigma_active)
+            log_inactive = log1p(-pi_t) + gaussian_row_logdensity(d, settings.sigma_inactive)
+            probability = exp(log_active - logsumexp2(log_active, log_inactive))
+            chain.z[j, t] = rand(rng) < probability
+
+            proposed_z = !chain.z[j, t]
+            proposed_level = proposed_z ?
+                settings.sigma_active .* randn(rng, k) :
+                previous .+ settings.sigma_inactive .* randn(rng, k)
+            increment = proposed_level .- level
+            change, new_values = row_increment_loglik_change(state, t, j, increment, u)
+            log_ratio = beta * change + (proposed_z ?
+                log(pi_t) - log1p(-pi_t) :
+                log1p(-pi_t) - log(pi_t))
+            chain.flip_tries += 1
+            if log(rand(rng)) < log_ratio
+                apply_row_increment!(state, t, j, increment, new_values, u)
+                chain.z[j, t] = proposed_z
+                level = proposed_level
+                d = proposed_level .- previous
+                chain.flip_accept += 1
+            end
+
+            kind = chain.z[j, t] ? :active : :inactive
+            sigma = chain.z[j, t] ? settings.sigma_active : settings.sigma_inactive
+            # The shock density acts on the level, the spike on the increment.
+            position = chain.z[j, t] ? level : d
+        end
+
+        step = chain.rw_scale[kind] * sigma .* randn(rng, k)
+        change, new_values = row_increment_loglik_change(state, t, j, step, u)
+        log_ratio = beta * change +
+            gaussian_row_logdensity(position .+ step, sigma) -
+            gaussian_row_logdensity(position, sigma)
+        chain.rw_tries[kind] += 1
+        if log(rand(rng)) < log_ratio
+            apply_row_increment!(state, t, j, step, new_values, u)
+            chain.rw_accept[kind] += 1
+        end
+    end
+    return chain
+end
+
 """One Metropolis-within-Gibbs sweep at the chain's temperature."""
 function mcmc_sweep!(chain::TemperedChain, settings::MCMCSettings, rng::AbstractRNG)
     state = chain.state
@@ -3377,49 +3666,53 @@ function mcmc_sweep!(chain::TemperedChain, settings::MCMCSettings, rng::Abstract
     beta = chain.beta
     sigma_of(z) = z ? settings.sigma_active : settings.sigma_inactive
 
-    for (t, j) in settings.rows
-        d = Vector(view(state.DiffLambda[t], j, :))
+    if settings.shock_center == :zero
+        reset_loading_sweep!(chain, settings, rng)
+    else
+        for (t, j) in settings.rows
+            d = Vector(view(state.DiffLambda[t], j, :))
 
-        if is_birth(alive, t, j)
-            kind = :birth
-            sigma = settings.sigma_initial
-        else
-            pi_t = chain.pi_time[t]
-            # Exact conditional of the indicator given D.
-            log_active = log(pi_t) + gaussian_row_logdensity(d, settings.sigma_active)
-            log_inactive = log1p(-pi_t) + gaussian_row_logdensity(d, settings.sigma_inactive)
-            probability = exp(log_active - logsumexp2(log_active, log_inactive))
-            chain.z[j, t] = rand(rng) < probability
+            if is_birth(alive, t, j)
+                kind = :birth
+                sigma = settings.sigma_initial
+            else
+                pi_t = chain.pi_time[t]
+                # Exact conditional of the indicator given D.
+                log_active = log(pi_t) + gaussian_row_logdensity(d, settings.sigma_active)
+                log_inactive = log1p(-pi_t) + gaussian_row_logdensity(d, settings.sigma_inactive)
+                probability = exp(log_active - logsumexp2(log_active, log_inactive))
+                chain.z[j, t] = rand(rng) < probability
 
-            # Flip move: switch component, draw D from its prior.
-            proposed_z = !chain.z[j, t]
-            proposed_d = sigma_of(proposed_z) .* randn(rng, k)
-            change, new_values = row_increment_loglik_change(state, t, j, proposed_d .- d)
-            log_ratio = beta * change + (proposed_z ?
-                log(pi_t) - log1p(-pi_t) :
-                log1p(-pi_t) - log(pi_t))
-            chain.flip_tries += 1
-            if log(rand(rng)) < log_ratio
-                apply_row_increment!(state, t, j, proposed_d .- d, new_values)
-                chain.z[j, t] = proposed_z
-                d = proposed_d
-                chain.flip_accept += 1
+                # Flip move: switch component, draw D from its prior.
+                proposed_z = !chain.z[j, t]
+                proposed_d = sigma_of(proposed_z) .* randn(rng, k)
+                change, new_values = row_increment_loglik_change(state, t, j, proposed_d .- d)
+                log_ratio = beta * change + (proposed_z ?
+                    log(pi_t) - log1p(-pi_t) :
+                    log1p(-pi_t) - log(pi_t))
+                chain.flip_tries += 1
+                if log(rand(rng)) < log_ratio
+                    apply_row_increment!(state, t, j, proposed_d .- d, new_values)
+                    chain.z[j, t] = proposed_z
+                    d = proposed_d
+                    chain.flip_accept += 1
+                end
+
+                kind = chain.z[j, t] ? :active : :inactive
+                sigma = sigma_of(chain.z[j, t])
             end
 
-            kind = chain.z[j, t] ? :active : :inactive
-            sigma = sigma_of(chain.z[j, t])
-        end
-
-        # Random walk within the current component.
-        step = chain.rw_scale[kind] * sigma .* randn(rng, k)
-        change, new_values = row_increment_loglik_change(state, t, j, step)
-        log_ratio = beta * change +
-            gaussian_row_logdensity(d .+ step, sigma) -
-            gaussian_row_logdensity(d, sigma)
-        chain.rw_tries[kind] += 1
-        if log(rand(rng)) < log_ratio
-            apply_row_increment!(state, t, j, step, new_values)
-            chain.rw_accept[kind] += 1
+            # Random walk within the current component.
+            step = chain.rw_scale[kind] * sigma .* randn(rng, k)
+            change, new_values = row_increment_loglik_change(state, t, j, step)
+            log_ratio = beta * change +
+                gaussian_row_logdensity(d .+ step, sigma) -
+                gaussian_row_logdensity(d, sigma)
+            chain.rw_tries[kind] += 1
+            if log(rand(rng)) < log_ratio
+                apply_row_increment!(state, t, j, step, new_values)
+                chain.rw_accept[kind] += 1
+            end
         end
     end
 
@@ -3517,6 +3810,8 @@ Gaussian random walk scaled to the current component. Then each Delta_j by a
 random walk on log Delta_j, and the coefficients by a Gaussian random walk.
 Random-walk scales adapt during burn-in only. With
 `estimate_coefficients = false` the coefficients stay at `coefficients_init`.
+With `shock_center = :zero` the sampler targets the reset prior (see
+`shock_slab_row`) and updates the loadings with `reset_loading_sweep!`.
 
 Returns posterior means from the first chain (`gamma`, with births set to 1
 as in `EM_time_varying`; `Omega_mean`, full p x p per time and meaningful on
@@ -3541,8 +3836,11 @@ function parallel_tempering_time_varying(
     n_burnin::Int=1000,
     n_samples::Int=2000,
     estimate_coefficients::Bool=true,
+    shock_center::Symbol=:previous,
     rng::AbstractRNG=Random.default_rng()
 )
+    shock_center in (:previous, :zero) ||
+        throw(ArgumentError("shock_center must be :previous or :zero"))
     alive = BitMatrix(alive_input)
     T, p = size(Y)
     births, deaths = birth_death_counts(alive)
@@ -3552,7 +3850,8 @@ function parallel_tempering_time_varying(
         Float64.(births), Float64.(deaths),
         [(t, j) for t in 1:T for j in 1:p if alive[t, j]],
         [(t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)],
-        estimate_coefficients
+        estimate_coefficients,
+        shock_center
     )
     chains = [
         make_tempered_chain(beta, Lambda_init, Delta_init, coefficients_init, Y, alive, settings)

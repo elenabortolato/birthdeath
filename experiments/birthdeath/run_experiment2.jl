@@ -88,6 +88,7 @@ ratio(a, b) = b == 0 ? NaN : a / b
 Simulate one Experiment II trajectory. `shock_rule = :network` makes each
 variable's shock probability depend on its partial correlations with the
 variables born and dying at t, with slopes `a_birth` and `a_death`.
+`shock_type = :reset` redraws a shocked row instead of adding a jump to it.
 """
 function simulate_experiment2(
     p, k, seed;
@@ -95,7 +96,8 @@ function simulate_experiment2(
     shock_rule=:counts,
     network_link=:partial_correlation,
     a_birth=A_EVENT,
-    a_death=A_EVENT
+    a_death=A_EVENT,
+    shock_type=:jump
 )
     data_rng = MersenneTwister(seed)
 
@@ -121,6 +123,7 @@ function simulate_experiment2(
         Delta_value=DELTA,
         shock_rule=shock_rule, network_link=network_link,
         a_birth=a_birth, a_death=a_death,
+        shock_type=shock_type,
         rng=data_rng
     )
 end
