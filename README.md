@@ -143,7 +143,19 @@ trajectories. The CSV is
 | off-diagonal RV | 0.72 | 0.72 | 0.86 |
 | estimated a_b / a_d (truth 4 / 4) | 0.01 / −0.29 | | 2.52 / 3.07 |
 
-The network fit computes its covariates from its own estimate of the network.
+With the loading link, `link=loadings`, the link is
+|⟨λ_{t−1,j}, λ_l⟩|, with true slopes 0.5. The CSV is
+`results/experiment2/network_loadings_p10_k5_tau150_min6.csv`.
+
+| | network fit | counts fit | oracle |
+|---|---|---|---|
+| shock AUROC | 0.53 ± 0.07 | 0.61 ± 0.07 | 0.99 ± 0.02 |
+| shock recall / precision | 0.07 / 0.09 | 0.08 / 0.09 | 0.99 / 1.00 |
+| off-diagonal RV | 0.68 | 0.69 | 0.85 |
+| estimated a_b / a_d (truth 0.5 / 0.5) | 0.02 / −0.09 | | 0.47 / 0.47 |
+
+With either link, the network fit computes its covariates from its own
+estimate of the network.
 At k = 5 that estimate is not good enough to locate the shocks, so the slopes
 are estimated near zero and the covariates add no information. The counts
 model ranks shocks better (AUROC 0.66) because the true shocks cluster at
