@@ -124,6 +124,7 @@ function network_main()
             row.oracle_auroc, row.network_a_birth, row.network_a_death,
             time() - started
         )
+        flush(stdout)
         if io !== nothing
             if !header_written
                 println(io, join(string.(keys(row)), ","))

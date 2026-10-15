@@ -111,6 +111,7 @@ function tempering_main()
         @printf("p=%d k=%d seed=%d  %s  min swap=%.2f  (%.0fs)\n",
             options.p, options.k, seed, summary, rows[2].swap_acceptance_min,
             time() - started)
+        flush(stdout)
         if io !== nothing
             if !header_written
                 println(io, join(string.(keys(first(rows))), ","))

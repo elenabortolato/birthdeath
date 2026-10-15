@@ -138,6 +138,7 @@ function mcmc_main()
         )
         @printf("p=%d k=%d seed=%d  %s  (%.0fs)\n",
             options.p, options.k, seed, summary, time() - started)
+        flush(stdout)
         if io !== nothing
             if !header_written
                 println(io, join(string.(keys(first(rows))), ","))

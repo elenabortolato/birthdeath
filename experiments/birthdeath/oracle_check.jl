@@ -219,6 +219,7 @@ function oracle_main()
             row.default_auroc, row.oracle_logposterior - row.default_logposterior,
             time() - started
         )
+        flush(stdout)
         if io !== nothing
             if !header_written
                 println(io, join(string.(keys(row)), ","))

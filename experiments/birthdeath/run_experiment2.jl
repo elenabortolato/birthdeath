@@ -269,6 +269,7 @@ function main()
             row.p, row.k, row.seed, row.rv, row.offdiag_rv, row.partial_rv,
             row.rfe, row.auroc, time() - started
         )
+        flush(stdout)
         if io !== nothing
             if !header_written
                 println(io, join(string.(keys(row)), ","))

@@ -207,6 +207,43 @@ one from the truth. The CSV is
   better, so mixing is incomplete; the flip move is accepted about 2–3% of
   the time.
 
+### Parallel tempering and parallel-tempered EM (partial runs)
+
+These runs were stopped early; the CSVs hold the trajectories that finished.
+All use p = 10, k = 2, τ_a = 1.5 and `minimum_active = 6`.
+
+**Parallel-tempering MCMC** (`tempering_check.jl`): nine temperatures,
+geometric from 1 to 0.2, 1000 + 2000 sweeps, started from the EM fit and from
+the truth. Eight trajectories finished; the CSV is
+`results/experiment2/tempering_p10_k2_tau150_min6.csv`.
+
+| | AUROC | recall | precision | off-diagonal RV |
+|---|---|---|---|---|
+| EM | 0.61 | 0.11 | 0.12 | 0.77 |
+| plain MCMC from EM fit, same trajectories | 0.65 | 0.14 | 0.31 | 0.84 |
+| tempering from EM fit | 0.61 | 0.15 | 0.22 | 0.81 |
+| tempering from truth | 0.75 | 0.22 | 0.52 | 0.87 |
+
+Exchange rates between neighbouring temperatures fell to 0.03–0.16 over the
+full runs, against about 0.3 in a 300-sweep test. The two starts still
+disagree: the median AUROC gap is 0.11.
+
+**Parallel-tempered EM** (`tempered_em_check.jl`): nine EM replicas, one per
+temperature, run in parallel and exchanging temperatures, started from the
+default EM fit. Six trajectories finished with Metropolis exchanges and four
+with greedy exchanges. The CSVs are
+`results/experiment2/tempered_em_{metropolis,greedy}_p10_k2_tau150_min6.csv`.
+
+| exchange rule | AUROC, EM → tempered | recall | log-posterior gain | exchange rate |
+|---|---|---|---|---|
+| Metropolis | 0.543 → 0.550 | 0.08 → 0.05 | +46 to +127 | 0.30–0.50 |
+| greedy | 0.571 → 0.574 | 0.08 → 0.06 | +70 to +136 | 0.00 |
+
+Tempered EM reaches a higher log posterior in every trajectory, without
+improving detection. With greedy exchanges no exchange is ever accepted, so
+the replicas reduce to independent EM runs at different temperatures, and the
+best state always comes from the hottest one.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:

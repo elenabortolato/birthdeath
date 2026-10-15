@@ -84,6 +84,7 @@ function tempered_em_main()
             tempered.recall, tempered.logposterior - em.logposterior,
             tempered.chosen_beta, tempered.swap_acceptance_min, time() - started
         )
+        flush(stdout)
         if io !== nothing
             if !header_written
                 println(io, join(string.(keys(first(rows))), ","))
