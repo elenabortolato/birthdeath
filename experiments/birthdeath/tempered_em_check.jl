@@ -14,13 +14,13 @@
 #       p=10 k=2 seeds=1:20 tau_active=1.5 minimum_active=6 \
 #       out=results/experiment2/tempered_em_p10_k2.csv
 #
-# TEMPERED_EM_EXCHANGE sets the exchange rule: metropolis (default), greedy or
-# always.
+# TEMPERED_EM_EXCHANGE sets the exchange rule: metropolis (default), greedy,
+# always or rank.
 #
 
 include(joinpath(@__DIR__, "mcmc_check.jl"))
 
-# Exchange rule between replicas: metropolis, greedy or always.
+# Exchange rule between replicas: metropolis, greedy, always or rank.
 const EXCHANGE = Symbol(get(ENV, "TEMPERED_EM_EXCHANGE", "metropolis"))
 
 function tempered_em_one(p, k, seed; tau_active, minimum_active)

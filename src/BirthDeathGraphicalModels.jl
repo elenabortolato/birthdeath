@@ -2851,7 +2851,11 @@ neighbouring temperatures propose to exchange their temperatures. With
 min(1, exp((beta_i - beta_j) (loglik_j - loglik_i))), as in parallel
 tempering. With `:greedy` it is accepted exactly when that ratio exceeds 1,
 that is when it increases the sum of the replicas' tempered log likelihoods;
-with `:always` every proposed exchange is made. Replicas at low temperature
+with `:always` every proposed exchange is made. With `:rank` the replicas are
+instead ranked by untempered log posterior at every exchange step and the
+temperatures reassigned in that order, the best-fitting replica at betas[1];
+the reported exchange rate for level i is then the fraction of steps at which
+its replica changed. Replicas at low temperature
 move between shock configurations more easily, and exchanges bring their
 states to beta = 1.
 
@@ -2887,8 +2891,8 @@ function parallel_tempered_EM(
     coefficient_damping::Float64=0.05,
     rng::AbstractRNG=Random.default_rng()
 )
-    exchange in (:metropolis, :greedy, :always) ||
-        throw(ArgumentError("exchange must be :metropolis, :greedy or :always"))
+    exchange in (:metropolis, :greedy, :always, :rank) ||
+        throw(ArgumentError("exchange must be :metropolis, :greedy, :always or :rank"))
     alive = BitMatrix(alive_input)
     births, deaths = birth_death_counts(alive)
     birth_x = Float64.(births)
@@ -2927,7 +2931,24 @@ function parallel_tempered_EM(
         Threads.@threads for r in 1:n
             tempered_em_step!(replicas[r], settings, birth_x, death_x, replica_rngs[r])
         end
-        if iter % swap_interval == 0
+        if iter % swap_interval == 0 && exchange == :rank
+            # Reassign temperatures by fit: the replica with the highest
+            # untempered log posterior goes to betas[1], and so on.
+            scores = Vector{Float64}(undef, n)
+            Threads.@threads for r in 1:n
+                scores[r] = replica_posterior(replicas[r], settings)[2]
+            end
+            new_order = sortperm(scores; rev=true)
+            for i in 1:(n - 1)
+                swap_tries[i] += 1
+                swap_accept[i] += new_order[i] != at_level[i]
+            end
+            at_level .= new_order
+            for (level, r) in enumerate(at_level)
+                replicas[r].beta = betas[level]
+            end
+            visited_beta_one[at_level[1]] = true
+        elseif iter % swap_interval == 0
             first_pair = isodd(div(iter, swap_interval)) ? 1 : 2
             for i in first_pair:2:(n - 1)
                 a, b = replicas[at_level[i]], replicas[at_level[i + 1]]
