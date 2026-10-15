@@ -25,7 +25,11 @@ include(joinpath(@__DIR__, "run_experiment2.jl"))
 const N_BURNIN = parse(Int, get(ENV, "MCMC_BURNIN", "1000"))
 const N_SAMPLES = parse(Int, get(ENV, "MCMC_SAMPLES", "2000"))
 
-"""Shock-detection metrics from shock probabilities, on continuation pairs."""
+"""
+Shock-detection metrics from shock probabilities, on continuation pairs:
+AUROC, and recall and precision with shocks called at gamma > 0.5 (and at
+0.3 and 0.2).
+"""
 function shock_metrics(sim, gamma)
     alive = sim.alive
     T_, p = size(alive)
@@ -34,16 +38,26 @@ function shock_metrics(sim, gamma)
     ]
     scores = [gamma[j, t] for (j, t) in continuations]
     truth = BitVector([sim.s_true[j, t] for (j, t) in continuations])
-    called = scores .> 0.5
-    tp = count(called .& truth)
-    fp = count(called .& .!truth)
-    fn = count(.!called .& truth)
+    function at(threshold)
+        called = scores .> threshold
+        tp = count(called .& truth)
+        fp = count(called .& .!truth)
+        fn = count(.!called .& truth)
+        return ratio(tp, tp + fn), ratio(tp, tp + fp)
+    end
+    recall, precision = at(0.5)
+    recall_03, precision_03 = at(0.3)
+    recall_02, precision_02 = at(0.2)
     return (
         auroc=auroc(scores, truth),
-        recall=ratio(tp, tp + fn),
-        precision=ratio(tp, tp + fp),
+        recall=recall,
+        precision=precision,
         gamma_true_shocks=nanmean(scores[truth]),
-        gamma_non_shocks=nanmean(scores[.!truth])
+        gamma_non_shocks=nanmean(scores[.!truth]),
+        recall_03=recall_03,
+        precision_03=precision_03,
+        recall_02=recall_02,
+        precision_02=precision_02
     )
 end
 

@@ -3304,6 +3304,7 @@ struct MCMCSettings
     death_x::Vector{Float64}
     rows::Vector{Tuple{Int, Int}}
     continuations::Vector{Tuple{Int, Int}}
+    estimate_coefficients::Bool
 end
 
 """
@@ -3451,6 +3452,7 @@ function mcmc_sweep!(chain::TemperedChain, settings::MCMCSettings, rng::Abstract
     end
 
     # Shock-probability coefficients; their conditional has no likelihood term.
+    settings.estimate_coefficients || return chain
     proposal = chain.coefficients .+ chain.coefficient_scale .* randn(rng, 3)
     chain.coefficient_tries += 1
     if log(rand(rng)) <
@@ -3513,7 +3515,8 @@ component and draws D_jt from that component's prior, so the acceptance ratio
 is the tempered likelihood ratio times the prior odds of z; and D_jt by a
 Gaussian random walk scaled to the current component. Then each Delta_j by a
 random walk on log Delta_j, and the coefficients by a Gaussian random walk.
-Random-walk scales adapt during burn-in only.
+Random-walk scales adapt during burn-in only. With
+`estimate_coefficients = false` the coefficients stay at `coefficients_init`.
 
 Returns posterior means from the first chain (`gamma`, with births set to 1
 as in `EM_time_varying`; `Omega_mean`, full p x p per time and meaningful on
@@ -3537,6 +3540,7 @@ function parallel_tempering_time_varying(
     coefficient_prior_sd::Vector{Float64}=[2.0, 2.0, 2.0],
     n_burnin::Int=1000,
     n_samples::Int=2000,
+    estimate_coefficients::Bool=true,
     rng::AbstractRNG=Random.default_rng()
 )
     alive = BitMatrix(alive_input)
@@ -3547,7 +3551,8 @@ function parallel_tempering_time_varying(
         coefficient_prior_mean, coefficient_prior_sd,
         Float64.(births), Float64.(deaths),
         [(t, j) for t in 1:T for j in 1:p if alive[t, j]],
-        [(t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)]
+        [(t, j) for t in 2:T for j in 1:p if is_continuation(alive, t, j)],
+        estimate_coefficients
     )
     chains = [
         make_tempered_chain(beta, Lambda_init, Delta_init, coefficients_init, Y, alive, settings)
