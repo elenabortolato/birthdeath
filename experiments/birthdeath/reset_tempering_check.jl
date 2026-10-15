@@ -17,11 +17,13 @@
 #       out=results/experiment2/reset_tempering_p10_k2_tau150_min6.csv
 #
 # MCMC_BURNIN and MCMC_SAMPLES set the number of sweeps (default 1000, 2000).
+# RESET_SKIP_PT=1 skips the parallel-tempering sampler (EM and tempered EM only).
 #
 
 include(joinpath(@__DIR__, "mcmc_check.jl"))
 
 const BETAS = collect(0.2 .^ ((0:8) ./ 8))
+const SKIP_PT = get(ENV, "RESET_SKIP_PT", "0") == "1"
 
 function reset_tempering_one(p, k, seed; tau_active, minimum_active)
     settings = (
@@ -43,7 +45,7 @@ function reset_tempering_one(p, k, seed; tau_active, minimum_active)
             Delta_init=copy(fit.Delta),
             coefficients_init=copy(fit.coefficient_vector)
         )
-        pt = parallel_tempering_time_varying(
+        pt = SKIP_PT ? nothing : parallel_tempering_time_varying(
             sim.Y, sim.alive, k;
             from_em..., settings..., betas=BETAS,
             n_burnin=N_BURNIN, n_samples=N_SAMPLES,
@@ -66,7 +68,7 @@ function reset_tempering_one(p, k, seed; tau_active, minimum_active)
             precision_metrics(sim, em_precisions(fit)),
             merge(none, (logposterior=fit.final_logposterior,))
         ))
-        push!(rows, merge(
+        SKIP_PT || push!(rows, merge(
             base, (method="pt_mcmc",),
             shock_metrics(sim, pt.gamma),
             precision_metrics(sim, pt.Omega_mean),
