@@ -360,6 +360,25 @@ zero for true shocks too, so the E-step, which judges shocks from those point
 estimates, cannot detect them. The precision matrices are recovered better
 than by the default fit.
 
+### MCMC with the recalibrated prior
+
+`tempering_check.jl` with `TEMPERING_FIXED_PI=0.1`,
+`TEMPERING_TAU_INACTIVE=0.3`, `TEMPERING_FROM_TRUTH=0` and `TEMPERING_PLAIN=1`
+runs parallel tempering (nine temperatures) and plain MCMC from the EM fit with
+the same calibration, using 1000 + 2000 sweeps. Five trajectories, in
+`results/experiment2/tempering_calibrated_pi010_tau030_p10_k2_tau150_min6.csv`.
+Recall / precision are shown at three thresholds on γ:
+
+| | AUROC | γ > 0.5 | γ > 0.3 | γ > 0.2 | mean γ, shocks / non-shocks | off-diagonal RV | RV |
+|---|---|---|---|---|---|---|---|
+| EM, π = 0.1, τ_i = 0.3 | 0.610 | 0 / – | 0 / – | 0 / – | 0.005 / 0.007 | 0.822 | 0.869 |
+| plain MCMC, same calibration | 0.590 | 0.06 / 0.22 | 0.10 / 0.18 | 0.19 / 0.18 | 0.143 / 0.089 | 0.823 | 0.878 |
+| parallel tempering, same calibration | 0.625 | 0.07 / 0.37 | 0.10 / 0.24 | 0.21 / 0.19 | 0.150 / 0.088 | 0.846 | 0.894 |
+| plain MCMC, π learned, τ_i = 0.075 (same seeds, 2000 + 3000 sweeps) | 0.634 | 0.13 / 0.44 | | | 0.180 / 0.071 | 0.844 | 0.893 |
+
+MCMC recovers shocks that EM with the same calibration misses, but the
+recalibration does not improve on MCMC with the original prior.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
