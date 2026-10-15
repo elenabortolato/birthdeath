@@ -468,6 +468,30 @@ Findings:
 - **Shock probabilities stay diffuse.** True shocks average γ = 0.17,
   against 0.10 for non-shocks, so few cross 0.5.
 
+### Tempered EM with unrestricted exchanges (reset prior)
+
+Same design as the previous section, but parallel-tempered EM makes every
+proposed exchange (`exchange = :always`). Exchanges are not limited to
+neighbouring temperatures:
+
+- `pairing = :random` pairs the nine levels at random each time;
+- `pairing = :distant` pairs the coldest level with the hottest.
+
+The CSV is `results/experiment2/reset_tempered_em_always_p10_k2_tau150_min6.csv`.
+Random pairing covers seeds 1–4. Distant pairing covers seeds 1 and 3 only;
+a container restart stopped the run. Table entries are means over the seeds
+covered.
+
+| pairing | data | EM: AUROC / recall / off-diagonal RV | tempered EM: AUROC / recall / off-diagonal RV |
+|---|---|---|---|
+| random | reset | 0.630 / 0.12 / 0.453 | 0.624 / 0.11 / 0.444 |
+| random | jump | 0.581 / 0.06 / 0.746 | 0.572 / 0.05 / 0.749 |
+| distant | reset | 0.578 / 0.10 / 0.391 | 0.577 / 0.10 / 0.379 |
+| distant | jump | 0.546 / 0.04 / 0.717 | 0.529 / 0.02 / 0.721 |
+
+Neither rule changes the outcome. Tempered EM ends at the EM mode, or at one
+with fewer shocks, whatever the temperatures its replicas pass through.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
