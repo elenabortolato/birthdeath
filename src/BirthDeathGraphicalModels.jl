@@ -13,6 +13,7 @@ export TensorPrecisionModel,
        EM_time_varying,
        MCMC_time_varying,
        parallel_tempering_time_varying,
+       parallel_tempered_EM,
        active_precision,
        active_precision_errors,
        compare_active_precision_matrices,
@@ -830,7 +831,8 @@ function log_posterior(
     sigma_active::Float64=1.0,
     sigma_inactive::Float64=0.01,
     a_delta::Float64=1.0,
-    b_delta::Float64=1.0
+    b_delta::Float64=1.0,
+    likelihood_temperature::Float64=1.0
 )
     T = length(state.Lambda)
     p, k = size(state.Lambda[1])
@@ -842,7 +844,9 @@ function log_posterior(
     inv_active = 1.0 / sigma_active^2
     inv_inactive = 1.0 / sigma_inactive^2
 
-    lp = sum(state.logliks)
+    # The likelihood is raised to the power likelihood_temperature (1 for the
+    # posterior; below 1 for the tempered objectives of tempered EM).
+    lp = likelihood_temperature * sum(state.logliks)
     logprior = 0.0
 
     for t in 1:T, j in 1:p
@@ -928,7 +932,8 @@ function full_log_posterior(
     a_delta::Float64=1.0,
     b_delta::Float64=1.0,
     coefficient_prior_mean::AbstractVector=fill(0.0, 3),
-    coefficient_prior_sd::AbstractVector=fill(2.0, 3)
+    coefficient_prior_sd::AbstractVector=fill(2.0, 3),
+    likelihood_temperature::Float64=1.0
 )
     lp, logprior = log_posterior(
         state,
@@ -938,7 +943,8 @@ function full_log_posterior(
         sigma_active=sigma_active,
         sigma_inactive=sigma_inactive,
         a_delta=a_delta,
-        b_delta=b_delta
+        b_delta=b_delta,
+        likelihood_temperature=likelihood_temperature
     )
 
     coefficient_prior = shock_coefficient_logprior(
@@ -1119,7 +1125,8 @@ function update_Delta_bayes!(
     sigma_active::Float64=1.0,
     sigma_inactive::Float64=0.01,
     max_backtracks::Int=15,
-    min_step::Float64=1e-6
+    min_step::Float64=1e-6,
+    likelihood_temperature::Float64=1.0
 )
     T, p = size(state.y)
     Delta_old = copy(state.Delta)
@@ -1134,7 +1141,8 @@ function update_Delta_bayes!(
         sigma_active=sigma_active,
         sigma_inactive=sigma_inactive,
         a_delta=a,
-        b_delta=b
+        b_delta=b,
+        likelihood_temperature=likelihood_temperature
     )
 
     for j in 1:p
@@ -1151,9 +1159,10 @@ function update_Delta_bayes!(
             y_jt = state.y[t, j]
             score = Delta_j * (sigma_jj - y_jt^2)
 
-            gradient += 0.5 * score
+            gradient += 0.5 * likelihood_temperature * score
             information +=
-                0.5 * Delta_j^2 * sigma_jj^2 + 0.5 * abs(score)
+                likelihood_temperature *
+                (0.5 * Delta_j^2 * sigma_jj^2 + 0.5 * abs(score))
             nobs += 1
         end
 
@@ -1186,7 +1195,8 @@ function update_Delta_bayes!(
                 sigma_active=sigma_active,
                 sigma_inactive=sigma_inactive,
                 a_delta=a,
-                b_delta=b
+                b_delta=b,
+                likelihood_temperature=likelihood_temperature
             )
 
             if isfinite(new_lp) && new_lp >= old_lp
@@ -1253,7 +1263,8 @@ function diff_lambda_grad_hess(
     h::Int;
     sigma_initial::Float64=1.0,
     sigma_active::Float64=1.0,
-    sigma_inactive::Float64=0.01
+    sigma_inactive::Float64=0.01,
+    likelihood_temperature::Float64=1.0
 )
     state.alive[s, j] || return 0.0, -Inf
 
@@ -1263,8 +1274,8 @@ function diff_lambda_grad_hess(
 
     for t in s:last_t
         g_lik, h_lik = lambda_likelihood_grad_hess(state, t, j, h)
-        gradient += g_lik
-        hessian += h_lik
+        gradient += likelihood_temperature * g_lik
+        hessian += likelihood_temperature * h_lik
     end
 
     delta = state.DiffLambda[s][j, h]
@@ -1290,12 +1301,13 @@ function local_diff_lambda_objective(
     h::Int;
     sigma_initial::Float64=1.0,
     sigma_active::Float64=1.0,
-    sigma_inactive::Float64=0.01
+    sigma_inactive::Float64=0.01,
+    likelihood_temperature::Float64=1.0
 )
     state.alive[s, j] || return -Inf
 
     last_t = active_spell_end(state.alive, s, j)
-    value = sum(view(state.logliks, s:last_t))
+    value = likelihood_temperature * sum(view(state.logliks, s:last_t))
     delta = state.DiffLambda[s][j, h]
 
     if is_birth(state.alive, s, j)
@@ -1329,6 +1341,7 @@ function update_DiffLambda_hess!(
     use_newton::Bool=true,
     shuffle_coords::Bool=true,
     verbose::Bool=false,
+    likelihood_temperature::Float64=1.0,
     rng::AbstractRNG=Random.default_rng()
 )
     T = length(state.DiffLambda)
@@ -1359,7 +1372,8 @@ function update_DiffLambda_hess!(
             h;
             sigma_initial=sigma_initial,
             sigma_active=sigma_active,
-            sigma_inactive=sigma_inactive
+            sigma_inactive=sigma_inactive,
+            likelihood_temperature=likelihood_temperature
         )
 
         gradient, hessian = diff_lambda_grad_hess(
@@ -1370,7 +1384,8 @@ function update_DiffLambda_hess!(
             h;
             sigma_initial=sigma_initial,
             sigma_active=sigma_active,
-            sigma_inactive=sigma_inactive
+            sigma_inactive=sigma_inactive,
+            likelihood_temperature=likelihood_temperature
         )
 
         if !isfinite(gradient) || abs(gradient) < 1e-14
@@ -1412,7 +1427,8 @@ function update_DiffLambda_hess!(
                     h;
                     sigma_initial=sigma_initial,
                     sigma_active=sigma_active,
-                    sigma_inactive=sigma_inactive
+                    sigma_inactive=sigma_inactive,
+                    likelihood_temperature=likelihood_temperature
                 )
             catch
                 proposal_valid = false
@@ -2740,6 +2756,203 @@ function EM_time_varying(
             σ_inactive_history=result.sigma_inactive_history,
             π_time_history=result.pi_time_history
         )
+    )
+end
+
+# ============================================================================
+# Parallel-tempered EM
+# ============================================================================
+
+"""One EM replica at likelihood temperature `beta`."""
+mutable struct EMReplica
+    beta::Float64
+    state::TensorPrecisionModel
+    coefficients::Vector{Float64}
+    pi_time::Vector{Float64}
+end
+
+"""
+One generalized EM iteration on the tempered objective
+beta * loglik + log prior: E-step, Delta step, loading-difference step and a
+damped update of the shock coefficients, as in `EM_time_varying`.
+"""
+function tempered_em_step!(replica::EMReplica, settings, birth_x, death_x, rng)
+    gamma = E_step_independent_advanced(
+        replica.state, replica.pi_time;
+        sigma_active=settings.sigma_active,
+        sigma_inactive=settings.sigma_inactive
+    )
+    update_Delta_bayes!(
+        replica.state, gamma, replica.pi_time;
+        a=settings.a_delta, b=settings.b_delta, step=1.0,
+        Delta_min=1e-10, Delta_max=1e6,
+        sigma_initial=settings.sigma_initial,
+        sigma_active=settings.sigma_active,
+        sigma_inactive=settings.sigma_inactive,
+        likelihood_temperature=replica.beta
+    )
+    update_DiffLambda_hess!(
+        replica.state, gamma;
+        step=1.0, max_jump=1.0,
+        sigma_initial=settings.sigma_initial,
+        sigma_active=settings.sigma_active,
+        sigma_inactive=settings.sigma_inactive,
+        likelihood_temperature=replica.beta,
+        rng=rng
+    )
+    update = update_shock_coefficients!(
+        copy(replica.coefficients), gamma, replica.state.alive, birth_x, death_x;
+        prior_mean=settings.coefficient_prior_mean,
+        prior_sd=settings.coefficient_prior_sd
+    )
+    if update.accepted
+        replica.coefficients .=
+            (1 - settings.coefficient_damping) .* replica.coefficients .+
+            settings.coefficient_damping .* update.coefficients
+        replica.pi_time = shock_probabilities_from_coefficients(
+            replica.coefficients, birth_x, death_x
+        )
+    end
+    return replica
+end
+
+"""
+Shock probabilities from an E-step, and the untempered log posterior used by
+`EM_time_varying` for its `final_logposterior`.
+"""
+function replica_posterior(replica::EMReplica, settings)
+    gamma = E_step_independent_advanced(
+        replica.state, replica.pi_time;
+        sigma_active=settings.sigma_active,
+        sigma_inactive=settings.sigma_inactive
+    )
+    value, _ = full_log_posterior(
+        replica.state, gamma, replica.pi_time, replica.coefficients;
+        sigma_initial=settings.sigma_initial,
+        sigma_active=settings.sigma_active,
+        sigma_inactive=settings.sigma_inactive,
+        a_delta=settings.a_delta,
+        b_delta=settings.b_delta,
+        coefficient_prior_mean=settings.coefficient_prior_mean,
+        coefficient_prior_sd=settings.coefficient_prior_sd
+    )
+    return gamma, value
+end
+
+"""
+Parallel-tempered (replica-exchange) generalized EM.
+
+One replica per likelihood temperature in `betas` runs generalized EM on the
+tempered objective beta * loglik + log prior, all starting from the same
+values (typically an `EM_time_varying` fit). Every `swap_interval`
+iterations, neighbouring replicas propose to exchange states, accepted with
+probability min(1, exp((beta_i - beta_j) (loglik_j - loglik_i))), as in
+parallel tempering. Low-temperature replicas move between shock
+configurations more easily, and exchanges carry their states towards
+beta = 1. After `n_tempered` iterations, the replica state with the highest
+untempered log posterior is kept and refined by untempered generalized EM
+until the gain falls below `tol` or `n_polish` iterations.
+
+This is a search for a higher mode of the posterior; it is not a sampler.
+Shock probabilities use the birth and death counts at each time.
+"""
+function parallel_tempered_EM(
+    Y::Matrix{Float64},
+    alive_input::AbstractMatrix{Bool},
+    k::Int;
+    Lambda_init::Vector{Matrix{Float64}},
+    Delta_init::Vector{Float64},
+    coefficients_init::Vector{Float64},
+    betas::Vector{Float64}=collect(0.2 .^ ((0:8) ./ 8)),
+    swap_interval::Int=5,
+    n_tempered::Int=200,
+    n_polish::Int=500,
+    tol::Float64=1e-6,
+    sigma_initial::Float64=1.0,
+    sigma_active::Float64=1.0,
+    sigma_inactive::Float64=0.01,
+    a_delta::Float64=1.0,
+    b_delta::Float64=1.0,
+    coefficient_prior_mean::Vector{Float64}=[0.0, 0.0, 0.0],
+    coefficient_prior_sd::Vector{Float64}=[2.0, 2.0, 2.0],
+    coefficient_damping::Float64=0.05,
+    rng::AbstractRNG=Random.default_rng()
+)
+    alive = BitMatrix(alive_input)
+    births, deaths = birth_death_counts(alive)
+    birth_x = Float64.(births)
+    death_x = Float64.(deaths)
+    settings = (
+        sigma_initial=sigma_initial, sigma_active=sigma_active,
+        sigma_inactive=sigma_inactive, a_delta=a_delta, b_delta=b_delta,
+        coefficient_prior_mean=coefficient_prior_mean,
+        coefficient_prior_sd=coefficient_prior_sd,
+        coefficient_damping=coefficient_damping
+    )
+    replicas = [
+        EMReplica(
+            beta,
+            make_tensor_precision_model(
+                [copy(L) for L in Lambda_init], copy(Delta_init), Y, alive
+            ),
+            copy(coefficients_init),
+            shock_probabilities_from_coefficients(coefficients_init, birth_x, death_x)
+        )
+        for beta in betas
+    ]
+    n = length(replicas)
+    swap_accept = zeros(Int, max(n - 1, 0))
+    swap_tries = zeros(Int, max(n - 1, 0))
+
+    for iter in 1:n_tempered
+        for replica in replicas
+            tempered_em_step!(replica, settings, birth_x, death_x, rng)
+        end
+        if iter % swap_interval == 0
+            first_pair = isodd(div(iter, swap_interval)) ? 1 : 2
+            for i in first_pair:2:(n - 1)
+                a, b = replicas[i], replicas[i + 1]
+                log_ratio = (a.beta - b.beta) *
+                    (sum(b.state.logliks) - sum(a.state.logliks))
+                swap_tries[i] += 1
+                if log(rand(rng)) < log_ratio
+                    a.state, b.state = b.state, a.state
+                    a.coefficients, b.coefficients = b.coefficients, a.coefficients
+                    a.pi_time, b.pi_time = b.pi_time, a.pi_time
+                    swap_accept[i] += 1
+                end
+            end
+        end
+    end
+
+    # Keep the replica state with the highest untempered log posterior.
+    scores = [replica_posterior(replica, settings)[2] for replica in replicas]
+    chosen = argmax(scores)
+    best = replicas[chosen]
+    best.beta = 1.0
+
+    previous = scores[chosen]
+    polish_iterations = 0
+    for _ in 1:n_polish
+        tempered_em_step!(best, settings, birth_x, death_x, rng)
+        polish_iterations += 1
+        _, current = replica_posterior(best, settings)
+        abs(current - previous) <= tol * (1 + abs(previous)) && break
+        previous = current
+    end
+
+    gamma, final_logposterior = replica_posterior(best, settings)
+    refresh_all_caches!(best.state)
+    return (
+        Lambda=best.state.Lambda,
+        Delta=best.state.Delta,
+        gamma=gamma,
+        coefficient_vector=copy(best.coefficients),
+        final_logposterior=final_logposterior,
+        chosen_beta=betas[chosen],
+        replica_logposteriors=scores,
+        polish_iterations=polish_iterations,
+        swap_acceptance=swap_accept ./ max.(swap_tries, 1)
     )
 end
 
