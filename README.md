@@ -379,6 +379,56 @@ Recall / precision are shown at three thresholds on γ:
 MCMC recovers shocks that EM with the same calibration misses, but the
 recalibration does not improve on MCMC with the original prior.
 
+### Reset prior: shocks centred at zero
+
+`reset_check.jl` compares two definitions of a shock. Both use the same
+spike, D_jt ~ N(0, τ_i²/k I), when there is no shock:
+
+- **jump** (`shock_center = :previous`, the paper's model):
+  λ_jt = λ_j,t−1 + D_jt, with D_jt ~ N(0, τ_a²/k I);
+- **reset** (`shock_center = :zero`): λ_jt ~ N(0, τ_a²/k I), independent of
+  λ_j,t−1, like a birth.
+
+Each of seeds 1–5 is simulated twice, with the same births, deaths and shock
+times: once with `shock_type = :jump` and once with `shock_type = :reset`.
+Both models are fitted to both data sets, by EM and by plain MCMC (1000 + 2000
+sweeps) started from the EM fit.
+
+Settings: p = 10, k = 2, τ_a = 1.5, τ_i = 0.075, π learned, minimum_active = 6.
+Under the reset prior, EM updates the loadings by level moves (one time
+point) and segment moves (up to the next shock). MCMC shifts whole regimes
+between shocks, so each move changes a single prior term. Results are in
+`results/experiment2/reset_p10_k2_tau150_min6.csv`; table entries are means
+over the 5 seeds.
+
+| data | model | method | AUROC | recall / precision at γ > 0.5 | recall / precision at γ > 0.2 | RV | RV, off-diagonal |
+|---|---|---|---|---|---|---|---|
+| jump | jump | EM | 0.585 | 0.09 / 0.11 | 0.09 / 0.11 | 0.817 | 0.739 |
+| jump | jump | MCMC | 0.598 | 0.13 / 0.30 | 0.20 / 0.22 | 0.871 | 0.817 |
+| jump | reset | EM | 0.575 | 0.07 / 0.24 | 0.07 / 0.24 | 0.813 | 0.735 |
+| jump | reset | MCMC | 0.589 | 0.05 / 0.33 | 0.10 / 0.28 | 0.853 | 0.785 |
+| reset | jump | EM | 0.550 | 0.08 / 0.08 | 0.08 / 0.08 | 0.638 | 0.471 |
+| reset | jump | MCMC | 0.615 | 0.11 / 0.18 | 0.33 / 0.18 | 0.723 | 0.570 |
+| reset | reset | EM | 0.614 | 0.10 / 0.17 | 0.10 / 0.17 | 0.604 | 0.420 |
+| reset | reset | MCMC | 0.673 | 0.03 / 0.22 | 0.33 / 0.22 | 0.752 | 0.600 |
+
+Findings:
+
+- **Matching the model to the data helps detection a little.**
+  - On reset data, the reset model has the best AUROC (MCMC 0.67 against 0.62
+    for the jump model).
+  - On jump data, the jump model is slightly better.
+  - These differences are within about one standard error with 5 seeds
+    (about 0.04).
+- **The reset prior does not solve detection.** Recall at γ > 0.5 stays at or
+  below 0.13 in every cell.
+- **The reset model is more conservative on jump data.** It calls fewer
+  shocks, with higher precision and lower recall.
+- **Precision matrices are much harder to recover from reset data** (RV,
+  off-diagonal, 0.42–0.60 against 0.74–0.82). After a reset the new loadings
+  share nothing with the past, so each regime is estimated only from its own
+  time points, at one observation per time.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
