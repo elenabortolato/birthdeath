@@ -1,0 +1,3 @@
+experiment,p,k,seed,method,rv,rfe,mse,norm_ratio,rfe_adjusted,offdiag_rv,partial_rv,n_matrices,gamma_at_change,gamma_elsewhere,a0,seconds
+I,50,15,4,em,0.78348,0.629919,0.302369,0.681105,0.621401,0.133358,0.138351,50,1e-10,0.000416667,-6.67214,2808.31
+I,50,15,4,mcmc,0.79806,1.04088,0.929094,1.58254,0.601768,0.182148,0.185164,50,0.27952,0.278354,-0.969536,1809.83
