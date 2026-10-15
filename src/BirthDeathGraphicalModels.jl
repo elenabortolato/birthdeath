@@ -108,6 +108,11 @@ the row changes with a probability set by `shock_rule`:
 N(0, change_sd^2 I) increment to the previous value; `:reset` redraws the row
 from N(0, change_sd^2 I), independently of its previous value.
 
+`legacy_redraw = true` reproduces the generator used before commit e1f1379,
+for comparison with results obtained with it: every continuing row is redrawn
+from N(0, initial_sd^2 I) at every time point (a shock then adds a jump to
+the fresh draw), and pi_t = 0 for t < 5. Only the `:counts` rule supports it.
+
 Inactive entries of `Y` and `Lambda` are stored as zero and must be interpreted
 together with `alive`.
 """
@@ -130,6 +135,7 @@ function generate_birth_death_data(
     a_birth::Float64=a_event,
     a_death::Float64=a_event,
     shock_type::Symbol=:jump,
+    legacy_redraw::Bool=false,
     rng::AbstractRNG=Random.default_rng()
 )
     shock_rule in (:counts, :network) ||
@@ -167,6 +173,7 @@ function generate_birth_death_data(
     for t in 2:T
         eta = a0 + a_event * event_counts[t]
         pi_time[t] = clamp(inverse_logit(eta), probability_min, probability_max)
+        legacy_redraw && t < 5 && (pi_time[t] = 0.0)
     end
 
     Lambda = [zeros(Float64, p, k) for _ in 1:T]
@@ -219,7 +226,8 @@ function generate_birth_death_data(
                 s_true[j, t] = true
             else
                 # A continuing row keeps its previous value unless a shock occurs.
-                view(Lambda[t], j, :) .= view(Lambda[t - 1], j, :)
+                view(Lambda[t], j, :) .= legacy_redraw ?
+                    initial_sd .* randn(rng, k) : view(Lambda[t - 1], j, :)
                 if rand(rng) < pi_time[t]
                     apply_true_shock!(view(Lambda[t], j, :), change_sd, shock_type, rng)
                     s_true[j, t] = true

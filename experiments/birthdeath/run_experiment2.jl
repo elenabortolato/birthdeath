@@ -124,6 +124,7 @@ function simulate_experiment2(
         shock_rule=shock_rule, network_link=network_link,
         a_birth=a_birth, a_death=a_death,
         shock_type=shock_type,
+        legacy_redraw=get(ENV, "LEGACY_GENERATOR", "0") == "1",
         rng=data_rng
     )
 end
