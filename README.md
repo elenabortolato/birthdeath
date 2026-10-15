@@ -429,6 +429,45 @@ Findings:
   share nothing with the past, so each regime is estimated only from its own
   time points, at one observation per time.
 
+### Reset prior with parallel tempering
+
+`reset_tempering_check.jl` fits the reset model (`shock_center = :zero`) to
+seeds 1–4, on reset data and on jump data, with three methods:
+
+- EM;
+- parallel-tempering MCMC: nine temperatures, 1000 + 2000 sweeps, from the
+  EM fit;
+- parallel-tempered EM: nine replicas, Metropolis exchanges, from the EM fit.
+
+Settings are as in the previous section. Results are in
+`results/experiment2/reset_tempering_p10_k2_tau150_min6.csv`; table entries
+are means over the four seeds. The "plain MCMC" rows are the same seeds from
+`reset_p10_k2_tau150_min6.csv`.
+
+| data | method | AUROC | recall / precision at γ > 0.5 | recall / precision at γ > 0.2 | RV | RV, off-diagonal | min. exchange rate |
+|---|---|---|---|---|---|---|---|
+| reset | EM | 0.630 | 0.12 / 0.22 | 0.12 / 0.22 | 0.620 | 0.453 | |
+| reset | plain MCMC | 0.677 | 0.03 / – | 0.31 / 0.21 | | 0.626 | |
+| reset | PT MCMC | 0.694 | 0.03 / 0.58 | 0.32 / 0.25 | 0.769 | 0.631 | 0.08 |
+| reset | tempered EM | 0.622 | 0.11 / 0.20 | 0.11 / 0.20 | 0.617 | 0.444 | 0.45 |
+| jump | EM | 0.581 | 0.06 / 0.25 | 0.06 / 0.25 | 0.825 | 0.746 | |
+| jump | plain MCMC | 0.562 | 0.03 / – | 0.07 / 0.22 | | 0.792 | |
+| jump | PT MCMC | 0.614 | 0.02 / 0.21 | 0.05 / 0.21 | 0.870 | 0.808 | 0.22 |
+| jump | tempered EM | 0.572 | 0.05 / 0.24 | 0.05 / 0.24 | 0.827 | 0.749 | 0.38 |
+
+Findings:
+
+- **Tempered EM is no better than EM.** It ends at the EM mode or at one
+  with fewer shocks, as it did under the jump prior.
+- **PT MCMC is the best method under the reset prior.**
+  - On reset data, AUROC is 0.69 (0.77 on seed 4).
+  - About a third of the true shocks have posterior probability above 0.2.
+  - Off-diagonal RV is 0.63, against 0.45 for EM.
+- **PT adds little over plain MCMC.** Exchanges between the coldest
+  temperatures are rare (rate down to 0.05).
+- **Shock probabilities stay diffuse.** True shocks average γ = 0.17,
+  against 0.10 for non-shocks, so few cross 0.5.
+
 ## Evaluation metrics
 
 `active_precision_errors` reports, at each time point and on the active set:
