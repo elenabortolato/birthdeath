@@ -239,8 +239,24 @@ with greedy exchanges. The CSVs are
 | Metropolis | 0.543 → 0.550 | 0.08 → 0.05 | +46 to +127 | 0.30–0.50 |
 | greedy | 0.571 → 0.574 | 0.08 → 0.06 | +70 to +136 | 0.00 |
 
+With rank exchanges, `exchange = :rank` (`tempered_em_check.jl` with
+`TEMPERED_EM_EXCHANGE=rank`), the replicas are re-sorted by untempered log
+posterior every 5 iterations and the temperatures reassigned in that order.
+All 20 trajectories finished; the CSV is
+`results/experiment2/tempered_em_rank_p10_k2_tau150_min6.csv`.
+
+| | EM | rank-exchange tempered EM |
+|---|---|---|
+| shock AUROC | 0.593 | 0.606 (better in 13 of 20; mean difference +0.013, SE 0.008) |
+| recall | 0.100 | 0.081 (lower in 10, equal in 10) |
+| precision | 0.099 | 0.116 |
+| off-diagonal RV | 0.775 | 0.780 |
+| log-posterior gain | | +39 to +140, median +68 |
+
+Exchange rates were 0.05–0.25; the best solution always came from beta = 1.
+
 Tempered EM reaches a higher log posterior in every trajectory, without
-improving detection. With greedy exchanges no exchange is ever accepted, so
+clearly improving detection. With greedy exchanges no exchange is ever accepted, so
 the replicas reduce to independent EM runs at different temperatures, and the
 best state always comes from the hottest one.
 
